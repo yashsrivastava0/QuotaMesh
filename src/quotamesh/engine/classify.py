@@ -164,7 +164,9 @@ def usage_metadata(body, decision):
         cost = usage.get("cost_usd")
         if cost is None and decision.get("provider_id") == "openrouter":
             cost = usage.get("cost")  # This extension is documented in USD for OpenRouter only.
-        provider_cost = cost if valid_price(cost) else None
+        # Bound a single-call USD observation to the same range as manual money fields.
+        # Implausible values stay unknown instead of overflowing durable sums.
+        provider_cost = cost if valid_price(cost) and cost <= 1_000_000 else None
         estimated = None
         if all(n is not None for n in tokens) and all(
             decision.get(p) is not None for p in ("input_price", "output_price")

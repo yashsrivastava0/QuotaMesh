@@ -12,15 +12,16 @@ Use the API access you already own through one local endpoint, with explicit ord
 
 </div>
 
-**Current scope: phases one and two.** The authenticated localhost gateway now supports
-ordered targets and key pools, body-aware fallback, persistent shared quota cooldowns,
-expiry, paid guardrails, and a route-testing dashboard. It currently has **one default
-policy (`qm/default`)**. The full Capacity Wallet and named Project Profiles are phase
-three; Responses and Anthropic Messages are deferred. This is an alpha developer tool.
+**Current scope: phases one, two, and three.** QuotaMesh has an authenticated localhost
+Chat Completions gateway, deterministic fallback, shared cooldowns, expiry and paid caps,
+a grouped FREE/TRIAL/PAID Capacity Wallet, editable credentials, named Project Profiles,
+and durable local usage with expandable metadata-only history. Existing `qm/default`
+clients keep working; each new project uses `qm/<slug>`. This is an alpha developer tool.
 
-QuotaMesh does not create capacity, bypass limits, or make paid API calls free. The
-product direction is a local wallet for mixed free/trial/paid access; this phase proves
-the decision engine before building that broader product.
+QuotaMesh does not create capacity, bypass limits, or make paid calls free. Counts and
+balances cover traffic through this gateway; provider quota stays unknown. Phase four
+adds Doctor, the Access Catalog and generated integration snippets. Phase five covers
+release/cross-platform QA and separately gated extensions: **two phases remain**.
 
 ## Quick start
 
@@ -40,17 +41,21 @@ redirects to a clean URL. The default port is 8787.
 
 In the dashboard:
 
-1. **Add API access.** Choose a provider, plan, label, and either a secret or an
-   environment variable name. Saving does not call the provider or spend quota.
-2. **Save route rules.** Add provider/model targets in your intended order. Pin a
-   credential or choose its provider pool. Enter the actual model ID your account can use.
-3. **Read the dry run.** It explains eligibility and skips without a provider call.
-   Eligibility is local policy/state, not a promise of remaining provider quota.
-4. **Send an explicit test.** The test uses the real gateway handler, shows response
-   text and attempts, and can use quota or money if the route permits it.
+1. **Add API access.** Choose a provider, plan, and either a secret or an environment
+   reference. Label is optional; custom endpoints also need a base URL. No model is
+   needed to save a credential, and saving makes no provider call.
+2. **Review My AI Capacity.** Shared provider/quota groups appear once with their keys,
+   observed usage, expiry, model states and source badges. Starting dollar credit is
+   manual; estimated remaining credit is local, never a live provider balance.
+3. **Save a Project Profile.** Keep default or create a name and immutable slug. Choose
+   exact provider/model targets, key pools or pinned keys, order, permissions, and caps.
+   Templates only edit the form; inspect and save the explicit result. Paid starts off.
+4. **Test and inspect.** The dry run makes no network call. An explicit test follows the
+   selected saved profile and can spend real quota when allowed. Expand its history to
+   see ordered attempts and skips; prompts and responses are never saved there.
 
-Only save fallback models you intentionally want to use; they are not interchangeable
-in quality or supported features. Paid/unknown-plan access starts disabled.
+To update an existing checkout, run `git switch main` and `git pull --ff-only` before
+installing. Back up your data directory before upgrading; schema v1/v2 migrates to v3.
 
 ## Test without API keys
 
@@ -58,32 +63,32 @@ in quality or supported features. Paid/unknown-plan access starts disabled.
 .venv/bin/quotamesh demo
 ```
 
-The demo starts on port 8788 with **temporary data**, separate from your normal
-configuration. It mounts a fake upstream in the same process; it never contacts a
-provider. Open the printed one-time link and choose a scenario:
+The demo runs on **127.0.0.1:8788**, prints a one-time dashboard link, uses temporary
+data, mounts a local fake provider, and deletes its store on exit. It starts with free,
+trial and paid sources, two trial keys sharing one $20 credit balance, and named profiles.
+Use the test panel; dollars, expiry and responses here are simulated.
 
 | Scenario | What to observe |
 | --- | --- |
-| Rate limit → free backup | Primary cools; second free credential serves; two attempts. |
-| Both free fail → paid blocked | No paid request; dry run explains the paid skip. |
-| Paid backup → $1 daily cap | Two fake paid successes total $1.20; further paid routing is blocked. This demonstrates final-cost overshoot. |
+| Mixed wallet + profiles | One shared trial source with two keys; route `paid-backup` to observe $0.60 and a $19.40 local estimate. `free-app` permits free access only. |
+| Rate limit → free backup | Two upstream attempts; persisted cooldown; next request selects the backup directly. |
+| Paid guard | Both free sources fail; paid stays blocked. |
+| Paid cap | Paid explicitly enabled; $0.60 per call reaches/overshoots the $1 daily cap, then blocks. |
 | Shared project | One 429 blocks its sibling for the same group/model; one upstream attempt. |
-| First SSE error | Enable streaming; failure before commitment falls back to the backup. |
-| Mid-stream cut | Enable streaming; one committed provider, then a visible interruption and no fallback. |
+| First SSE error | Enable streaming; pre-commit failure falls back. |
+| Mid-stream cut | Enable streaming; one committed provider, then interruption with no fallback. |
 
-Reloading a scenario resets this temporary demo's history, quota states, and policy.
-The demo's test panel uses its browser session; `quotamesh key` reads the normal data
-directory's key and is not the temporary demo key.
-
-For a separate fake provider, `.venv/bin/quotamesh fake-upstream` listens on port 8799.
-Use the **Custom** preset, `http://127.0.0.1:8799/v1`, any fake model, FREE, and a fake
-secret such as `fake-200`, `fake-429-short`, or `fake-401`.
+Loading a scenario resets only this temporary demo's profiles, history, rollups and quota
+state. `quotamesh key` reads your normal data directory, not the temporary demo's key.
+For a separate fake provider, run `.venv/bin/quotamesh fake-upstream` on port 8799; use
+Custom, `http://127.0.0.1:8799/v1`, FREE, any fake model and a secret such as `fake-200`,
+`fake-429-short` or `fake-401`.
 
 ## How routing works
 
 ```mermaid
 flowchart LR
-    Client[Local client / qm/default] --> Auth[Host / origin / bearer checks]
+    Client[Local client / qm/profile] --> Auth[Host / origin / bearer checks]
     Auth --> Select[Shared pure candidate selector]
     Rules[Saved order / pools / policy] --> Select
     State[SQLite cooldowns / expiry / paid spend] --> Select
@@ -92,7 +97,7 @@ flowchart LR
     Classify --> State
     Classify --> Select
     Attempt -->|valid JSON or first valid SSE response event| Commit[Commit and pass through]
-    Commit --> History[Metadata-only history / paid rollup]
+    Commit --> History[Metadata history / durable usage]
     Dry[Dashboard dry run] --> Select
 ```
 
@@ -116,7 +121,14 @@ flowchart LR
   Missing `[DONE]` is an interruption. Cancellation closes the upstream.
 - **Reset shared state** clears credential invalidity and its shared quota group. It
   does not restore provider quota, fix an invalid key, change expiry, or clear paid spend.
-  Rotate rejected keys by adding a replacement and changing the target; disable the old key.
+  Use Edit / rotate to replace a secret or environment reference. Rotation keeps shared
+  cooldowns and spending; metadata-only edits preserve the current secret.
+
+Profile names can change; slugs cannot. Deleting a profile archives its identity and
+reserves its slug, retaining spend and history. Default can be disabled, not deleted.
+Deleting a key removes its secret record and archives metadata; first remove any pinned
+targets. Provider changes also require removing pins. Provider pools join matching keys
+dynamically; adding a key does not create new quota.
 
 If all candidates are already blocked, a recovery within 60 seconds yields local
 429 + Retry-After; otherwise local 503 includes sanitized candidate reasons. After real
@@ -124,7 +136,8 @@ attempts, a terminal/budget-exhausted failure returns the last upstream/local er
 
 ### Paid caps and cost truth
 
-Paid and UNKNOWN plans need explicit route permission. Optional daily/monthly caps use
+Paid and UNKNOWN plans need explicit permission in the selected profile. Caps and
+usage are scoped to that profile; provider/group/model cooldowns are shared across profiles. Optional daily/monthly caps use
 **UTC calendar windows and only paid traffic through QuotaMesh**. Daily rollups survive
 request-history deletion. Caps check observed spend before selection; concurrent and
 in-flight requests may overshoot by their final costs. They are not provider billing controls.
@@ -153,7 +166,8 @@ curl http://127.0.0.1:8787/v1/chat/completions \
 
 For the OpenAI Python SDK, install `openai` separately and use
 `base_url="http://127.0.0.1:8787/v1"`, your local gateway key, and `model="qm/default"`.
-Add `stream: true` for SSE. The gateway swaps only the selected model and preserves
+Use a saved alias such as `model="qm/free-app"` for another project; `GET /v1/models`
+lists enabled, non-archived profile aliases. Add `stream: true` for SSE. The gateway swaps only the selected model and preserves
 other JSON extension fields and original successful upstream bytes.
 
 ## What you need for real provider testing
@@ -188,10 +202,16 @@ machine, and no live provider calls were made. See [the implementation plan](doc
 | Endpoint | Purpose | Access |
 | --- | --- | --- |
 | `GET /health` | Process liveness, not provider readiness | None |
-| `GET /v1/models` | Default profile alias | Local bearer key |
+| `GET /v1/models` | Enabled profile aliases | Local bearer key |
 | `POST /v1/chat/completions` | Stream/non-stream routing | Local bearer key |
-| `GET /api/status`, `/api/dry-run` | Safe metadata / shared selector | Browser session or local bearer |
-| `POST /api/credentials` | Add a write-only credential | Browser session or local bearer |
+| `GET /api/status`, `/api/dry-run` | Safe metadata / shared selector; optional `?profile=slug` | Browser session or local bearer |
+| `POST /api/credentials` | Add a write-only credential, no model required | Browser session or local bearer |
+| `PATCH /api/credentials/{id}`, `DELETE /api/credentials/{id}` | Edit/rotate or archive a credential; omitted secret fields preserve it | Browser session or local bearer |
+| `GET /api/wallet` | Grouped sources and observed usage with truth badges | Browser session or local bearer |
+| `GET /api/profiles`, `POST /api/profiles` | List/create named profiles | Browser session or local bearer |
+| `PUT /api/profiles/{slug}`, `DELETE /api/profiles/{slug}` | Replace full profile policy or archive it | Browser session or local bearer |
+| `GET /api/usage` | Durable per-day/profile/key/model/plan rows; optional `profile`, `day` | Browser session or local bearer |
+| `GET /api/activity` | Request traces; optional `profile`, `limit` (1–100), `before` cursor | Browser session or local bearer |
 | `POST /api/policy` | Save ordered default policy | Browser session or local bearer |
 | `POST /api/credentials/{id}/action` | Enable, disable, or reset shared state | Browser session or local bearer |
 | `POST /api/test` | Explicit test using the gateway handler | Browser session or local bearer |
@@ -207,8 +227,17 @@ Client-provided labels are not persisted. There is no telemetry or background qu
 Secrets entered directly are plaintext in local SQLite, with restrictive Unix permissions;
 Windows does not provide equivalent guarantees through POSIX mode bits. Data defaults to
 `~/.local/share/quotamesh` or `%LOCALAPPDATA%/QuotaMesh`. Set `QUOTAMESH_DATA_DIR` to isolate
-it. Schema v1 migrates additively to v2; back up that directory before upgrading. Older
-phase-one binaries cannot read v2. Legacy paid usage with no reliable costs stays unknown.
+it. Schema v1/v2 migrates transactionally to v3; back up before upgrading. Older builds
+cannot read v3. Paid cap totals survive upgrades, deletion and pruning. Retained attempts
+are backfilled once; earlier pruned detail cannot be reconstructed and coverage is labeled.
+Legacy paid costs without evidence stay unknown. Estimated remaining credit stays unknown
+for legacy stores with incomplete coverage, missing cost, or conflicting starting amounts.
+
+History retains at most 30 days and 50,000 attempts, keeping complete traces at the row
+boundary. Daily rollups are never pruned automatically. One request with fallback counts
+once as a routed request but can have several upstream attempts; rejected/no-capacity
+requests that make no upstream call are excluded from these observation counts.
+`quotamesh status` shows the grouped wallet and all named profile summaries.
 
 ## Development
 
@@ -219,18 +248,20 @@ phase-one binaries cannot read v2. Legacy paid usage with no reliable costs stay
 .venv/bin/python -m build
 ```
 
-An optional real-browser check uses system Chromium:
+An optional real-browser check uses Playwright Chromium:
 
 ```sh
 .venv/bin/python -m pip install playwright
+.venv/bin/playwright install chromium
 .venv/bin/python scripts/browser_smoke.py
 ```
 
-Set `CHROMIUM_PATH` when Chromium is elsewhere. The smoke script launches and stops its
-own isolated demo, checks all six scenarios, policy/credential forms, and mobile overflow.
+Set `CHROMIUM_PATH=/path/to/chromium` to use a system browser instead. The smoke script launches and stops its
+own isolated demo, checks the mixed wallet, profile CRUD, credential editing/rotation,
+streaming/credit/history, all six failure scenarios, and mobile overflow.
 Playwright is a verification tool, not an application dependency.
 
 Use a task branch and Conventional Commits; see [CONTRIBUTING.md](CONTRIBUTING.md).
-See [architecture](docs/architecture.md), [phase-two plan](docs/phase-two-plan.md), and
+See [architecture](docs/architecture.md), [phase-two plan](docs/phase-two-plan.md), [phase-three plan](docs/phase-three-plan.md), and
 [ROADMAP.md](ROADMAP.md). The [65-page product PDF](QuotaMesh_MVP_Architecture_Product_Spec_v0.3.pdf)
-is product intent; the roadmap separates the phase-two deliverable from the full MVP.
+is product intent; the roadmap separates delivered phases one–three from the remaining MVP/release work.

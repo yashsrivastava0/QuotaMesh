@@ -7,6 +7,7 @@ import json
 import logging
 import math
 import os
+import re
 import sqlite3
 import time
 import uuid
@@ -81,7 +82,7 @@ def _record_attempt(request: Request, **values: Any) -> None:
         LOG.warning("Could not write request metadata")
 
 
-def blocked_response(decisions, code="no_candidates"):
+def blocked_response(decisions, code="no_candidates", slug="default"):
     now = datetime.now(UTC)
     recoveries = [datetime.fromisoformat(d["recovery_at"]) for d in decisions if d["recovery_at"]]
     wait = min(((date - now).total_seconds() for date in recoveries), default=9999)
@@ -89,7 +90,7 @@ def blocked_response(decisions, code="no_candidates"):
     headers = {"Retry-After": str(max(1, math.ceil(wait)))} if status == 429 else {}
     return JSONResponse(
         {
-            "error": {"message": "No eligible capacity for qm/default", "type": code, "code": code},
+            "error": {"message": f"No eligible capacity for qm/{slug}", "type": code, "code": code},
             "quotamesh": {"candidates": decisions},
         },
         status_code=status,
@@ -132,13 +133,24 @@ async def chat_completions(request: Request) -> Response:
         payload = json.loads(raw_buffer)
     except (ValueError, UnicodeDecodeError):
         return api_error(400, "Expected a JSON request body", "invalid_request")
-    if not isinstance(payload, dict) or payload.get("model") != "qm/default":
-        return api_error(400, "Use model qm/default", "invalid_model")
+    alias = payload.get("model") if isinstance(payload, dict) else None
+    if (
+        not isinstance(alias, str)
+        or not re.fullmatch(r"qm/[a-z0-9]+(?:-[a-z0-9]+)*", alias)
+        or len(alias) > 63
+    ):
+        return api_error(400, "Use model qm/<profile-slug>", "invalid_model")
+    slug = alias[3:]
     if not isinstance(payload.get("stream", False), bool):
         return api_error(400, "stream must be a boolean", "invalid_request")
-    decisions, profile, credentials = decision_snapshot(request.app)
+    decisions, profile, credentials = decision_snapshot(request.app, slug)
     if not profile:
-        return api_error(503, "Configure the default route first", "not_configured")
+        return api_error(
+            503 if slug == "default" else 404,
+            "Configure default first" if slug == "default" else "Profile not found",
+            "not_configured" if slug == "default" else "profile_not_found",
+        )
+    profile_id, max_attempts = profile["id"], profile["max_attempts"]
     # Preserve the Phase 1 explicit paid-disabled error for a single paid connection.
     if decisions and all(d["skip_reason"] == "paid_blocked" for d in decisions):
         return api_error(403, "Paid or unknown-plan use is disabled", "paid_blocked")
@@ -151,9 +163,11 @@ async def chat_completions(request: Request) -> Response:
     context_skip = set()
     count = 0
     last_response = None
-    while count < profile["max_attempts"]:
+    while count < max_attempts:
         # Recompute after every state change; never use a stale initial pool for fallback.
-        decisions, profile, credentials = decision_snapshot(request.app)
+        decisions, profile, credentials = decision_snapshot(request.app, slug)
+        if not profile or profile["id"] != profile_id or not profile["enabled"]:
+            break
         selected = next(
             (
                 d
@@ -170,6 +184,7 @@ async def chat_completions(request: Request) -> Response:
         if remaining <= 0:
             return api_error(504, "Route attempt deadline exceeded", "deadline_exceeded")
         connection = credentials[selected["credential_id"]]
+        selected["credential_revision"] = connection["fingerprint"]
         secret = connection["secret_value"] or os.environ.get(connection["env_name"] or "", "")
         count += 1
         attempted.add((selected["credential_id"], selected["model"]))
@@ -177,7 +192,10 @@ async def chat_completions(request: Request) -> Response:
         details = {
             "ts": utc_now(),
             "request_id": request_id,
-            "profile_id": 1,
+            "profile_id": profile_id,
+            "profile_slug": slug,
+            "plan_type": selected["plan_type"],
+            "credential_label": selected["label"],
             # User-controlled labels can accidentally contain secrets; do not persist them.
             "client_label": None,
             "attempt_idx": count,
@@ -186,12 +204,10 @@ async def chat_completions(request: Request) -> Response:
             "credential_id": selected["credential_id"],
             "streamed": int(streamed),
             "paid": int(selected["plan_type"] in {"PAID", "UNKNOWN"}),
-            "skipped_json": json.dumps([d for d in decisions if not d["eligible"]])
-            if count == 1
-            else None,
+            "skipped_json": json.dumps([d for d in decisions if not d["eligible"]]),
         }
         qm_headers = {
-            "X-QuotaMesh-Profile": "default",
+            "X-QuotaMesh-Profile": slug,
             "X-QuotaMesh-Provider": selected["provider_id"],
             "X-QuotaMesh-Model": safe_header(selected["model"]),
             "X-QuotaMesh-Key": safe_header(selected["label"]),
@@ -373,6 +389,8 @@ async def chat_completions(request: Request) -> Response:
                     yield b'event: error\ndata: {"error":{"message":"Upstream stream interrupted","type":"upstream_stream"}}\n\n'
                 finally:
                     await upstream.aclose()
+                    if selected["plan_type"] == "FREE" and usage.get("provider_cost_usd") is None:
+                        usage["estimated_cost_usd"] = 0
                     _record_attempt(
                         request,
                         **details,
@@ -397,8 +415,16 @@ async def chat_completions(request: Request) -> Response:
             else "UPSTREAM_ERROR"
         )
         # Known rejected requests carry zero charge; uncertain transport failures remain unknown.
-        if details["paid"] and status >= 400 and outcome.kind not in {"network", "protocol"}:
-            metadata["provider_cost_usd"] = 0
+        if (
+            status >= 400
+            and outcome.kind not in {"network", "protocol"}
+            or (
+                outcome.kind == "ok"
+                and selected["plan_type"] == "FREE"
+                and metadata.get("provider_cost_usd") is None
+            )
+        ):
+            metadata["estimated_cost_usd"] = 0
         _record_attempt(
             request,
             **details,
@@ -422,19 +448,20 @@ async def chat_completions(request: Request) -> Response:
         return api_error(504, "Route attempt deadline exceeded", "deadline_exceeded")
     if last_response:
         return last_response
-    return blocked_response(decisions)
+    return blocked_response(decisions, slug=slug)
 
 
 @router.get("/v1/models")
 def models(request: Request) -> Response:
     if not bearer_authorized(request):
         return api_error(401, "Invalid local gateway key", "unauthorized")
-    _, profile, _ = decision_snapshot(request.app)
     return JSONResponse(
         {
             "object": "list",
-            "data": [{"id": "qm/default", "object": "model", "owned_by": "quotamesh"}]
-            if profile
-            else [],
+            "data": [
+                {"id": "qm/" + p["slug"], "object": "model", "owned_by": "quotamesh"}
+                for p in request.app.state.store.profiles()
+                if p["enabled"]
+            ],
         }
     )

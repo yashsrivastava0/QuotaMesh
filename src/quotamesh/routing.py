@@ -6,9 +6,9 @@ from datetime import UTC, datetime
 from quotamesh.engine.select import candidates
 
 
-def decision_snapshot(app):
+def decision_snapshot(app, slug="default"):
     now = datetime.now(UTC)
-    profile, targets, credentials, states, usage = app.state.store.routing_snapshot(now)
+    profile, targets, credentials, states, usage = app.state.store.routing_snapshot(now, slug)
     for credential in credentials:
         credential["secret_available"] = bool(
             credential["secret_value"] or os.environ.get(credential["env_name"] or "")
