@@ -49,6 +49,8 @@ def create_app(
     app.state.session_token = secrets.token_urlsafe(32)
     app.state.client = client
     app.state.diagnostic_write_failures = 0
+    app.state.degraded = {}
+    app.state.accounting_failed = store.accounting_marker.exists()
     app.middleware("http")(local_host_guard(allow_test_host=allow_test_host))
     app.mount("/static", StaticFiles(directory=str(UI / "static")), name="static")
     app.include_router(dashboard_router)

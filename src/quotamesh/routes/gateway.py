@@ -5,17 +5,21 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import sqlite3
 import time
 import uuid
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
+from quotamesh.engine.classify import Outcome, classify, sse_payload, usage_metadata
+from quotamesh.routing import decision_snapshot
 from quotamesh.security import api_error, bearer_authorized
 from quotamesh.store import utc_now
 
@@ -62,22 +66,57 @@ def first_event_is_error(event: bytes) -> bool:
     return False
 
 
-def _usage(body: bytes) -> tuple[int | None, int | None]:
-    try:
-        usage = json.loads(body).get("usage", {})
-        if not isinstance(usage, dict):
-            return None, None
-        return usage.get("prompt_tokens"), usage.get("completion_tokens")
-    except (ValueError, AttributeError, UnicodeDecodeError):
-        return None, None
-
-
 def _record_attempt(request: Request, **values: Any) -> None:
     try:
         request.app.state.store.record_attempt(**values)
     except sqlite3.Error:
         request.app.state.diagnostic_write_failures += 1
+        if values.get("paid"):
+            request.app.state.accounting_failed = True
+            # Retain a safety marker across restarts if the independent filesystem is writable.
+            try:
+                request.app.state.store.accounting_marker.touch(mode=0o600, exist_ok=True)
+            except OSError:
+                LOG.warning("Could not persist paid-accounting safety marker")
         LOG.warning("Could not write request metadata")
+
+
+def blocked_response(decisions, code="no_candidates"):
+    now = datetime.now(UTC)
+    recoveries = [datetime.fromisoformat(d["recovery_at"]) for d in decisions if d["recovery_at"]]
+    wait = min(((date - now).total_seconds() for date in recoveries), default=9999)
+    status = 429 if 0 < wait <= 60 else 503
+    headers = {"Retry-After": str(max(1, math.ceil(wait)))} if status == 429 else {}
+    return JSONResponse(
+        {
+            "error": {"message": "No eligible capacity for qm/default", "type": code, "code": code},
+            "quotamesh": {"candidates": decisions},
+        },
+        status_code=status,
+        headers=headers,
+    )
+
+
+def apply_outcome(request, decision, outcome):
+    now = datetime.now(UTC)
+    if outcome.scope in {"target", "credential_model"}:
+        key = (decision["provider_id"], decision["model"])
+        if outcome.scope == "credential_model":
+            key += (decision["credential_id"],)
+        request.app.state.degraded[key] = now + timedelta(seconds=30)
+    try:
+        request.app.state.store.apply_outcome(decision, outcome, now)
+    except sqlite3.Error:
+        request.app.state.diagnostic_write_failures += 1
+        # A failed safety-state write must not silently reopen the source.
+        request.app.state.degraded[(decision["provider_id"], decision["model"])] = now + timedelta(
+            minutes=5
+        )
+        LOG.warning("Could not persist routing state")
+
+
+def safe_header(value):
+    return "".join(c for c in str(value) if 32 <= ord(c) < 127)[:200]
 
 
 @router.post("/v1/chat/completions")
@@ -97,193 +136,305 @@ async def chat_completions(request: Request) -> Response:
         return api_error(400, "Use model qm/default", "invalid_model")
     if not isinstance(payload.get("stream", False), bool):
         return api_error(400, "stream must be a boolean", "invalid_request")
-
-    store = request.app.state.store
-    connection = store.runtime_connection()
-    if not connection:
-        return api_error(503, "Configure the default connection first", "not_configured")
-    if not connection["enabled"] or not connection["profile_enabled"]:
-        return api_error(503, "Default connection is disabled", "disabled")
-    if connection["plan_type"] in {"PAID", "UNKNOWN"} and not connection["allow_paid"]:
-        return api_error(403, "Paid or unknown-plan use is disabled for qm/default", "paid_blocked")
-    secret = connection["secret_value"] or os.environ.get(connection["env_name"] or "", "")
-    if not secret:
-        return api_error(503, "The configured environment secret is unavailable", "missing_secret")
-
-    payload["model"] = connection["model"]
-    forwarded = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    decisions, profile, credentials = decision_snapshot(request.app)
+    if not profile:
+        return api_error(503, "Configure the default route first", "not_configured")
+    # Preserve the Phase 1 explicit paid-disabled error for a single paid connection.
+    if decisions and all(d["skip_reason"] == "paid_blocked" for d in decisions):
+        return api_error(403, "Paid or unknown-plan use is disabled", "paid_blocked")
     request_id = uuid.uuid4().hex
-    started = time.monotonic()
-    streamed = bool(payload.get("stream", False))
-    details = {
-        "ts": utc_now(),
-        "request_id": request_id,
-        "profile_id": connection["profile_id"],
-        "client_label": request.headers.get("x-quotamesh-client", "")[:100],
-        "attempt_idx": 1,
-        "provider_id": connection["provider_id"],
-        "model": connection["model"],
-        "credential_id": connection["id"],
-        "streamed": int(streamed),
-    }
-    headers = {
-        "Authorization": f"Bearer {secret}",
-        "Content-Type": "application/json",
-        "Accept": "text/event-stream" if streamed else "application/json",
-        "Accept-Encoding": "identity",
-    }
-    url = connection["base_url"].rstrip("/") + "/chat/completions"
-    client: httpx.AsyncClient = request.app.state.client
-    try:
-        upstream_request = client.build_request("POST", url, content=forwarded, headers=headers)
-        upstream = await client.send(upstream_request, stream=True)
-    except httpx.HTTPError:
-        _record_attempt(
-            request,
-            **details,
-            outcome="NETWORK_ERROR",
-            error_class="network",
-            http_status=None,
-            latency_ms=int((time.monotonic() - started) * 1000),
+    streamed = payload.get("stream", False)
+    deadline = time.monotonic() + (
+        profile["first_event_timeout_s"] if streamed else profile["nonstream_deadline_s"]
+    )
+    attempted = set()
+    context_skip = set()
+    count = 0
+    last_response = None
+    while count < profile["max_attempts"]:
+        # Recompute after every state change; never use a stale initial pool for fallback.
+        decisions, profile, credentials = decision_snapshot(request.app)
+        selected = next(
+            (
+                d
+                for d in decisions
+                if d["eligible"]
+                and (d["credential_id"], d["model"]) not in attempted
+                and d["position"] not in context_skip
+            ),
+            None,
         )
-        return api_error(502, "Upstream connection failed", "upstream_connection")
-
-    def safe_header(value: str) -> str:
-        return value.encode("ascii", "ignore").decode("ascii")[:200]
-
-    qm_headers = {
-        "X-QuotaMesh-Profile": "default",
-        "X-QuotaMesh-Provider": connection["provider_id"],
-        "X-QuotaMesh-Model": safe_header(connection["model"]),
-        "X-QuotaMesh-Key": safe_header(connection["label"]),
-        "X-QuotaMesh-Attempts": "1",
-        "X-QuotaMesh-Fallback": "false",
-        "X-QuotaMesh-Request-Id": request_id,
-    }
-    media_type = upstream.headers.get("content-type", "application/json").split(";")[0]
-    if 300 <= upstream.status_code < 400:
-        await upstream.aclose()
-        _record_attempt(
-            request,
-            **details,
-            outcome="UPSTREAM_REDIRECT",
-            error_class="redirect",
-            http_status=502,
-            latency_ms=int((time.monotonic() - started) * 1000),
-        )
-        return api_error(502, "Upstream redirect blocked", "upstream_redirect")
-
-    if not streamed or upstream.status_code >= 400:
+        if selected is None:
+            break
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return api_error(504, "Route attempt deadline exceeded", "deadline_exceeded")
+        connection = credentials[selected["credential_id"]]
+        secret = connection["secret_value"] or os.environ.get(connection["env_name"] or "", "")
+        count += 1
+        attempted.add((selected["credential_id"], selected["model"]))
+        started = time.monotonic()
+        details = {
+            "ts": utc_now(),
+            "request_id": request_id,
+            "profile_id": 1,
+            # User-controlled labels can accidentally contain secrets; do not persist them.
+            "client_label": None,
+            "attempt_idx": count,
+            "provider_id": selected["provider_id"],
+            "model": selected["model"],
+            "credential_id": selected["credential_id"],
+            "streamed": int(streamed),
+            "paid": int(selected["plan_type"] in {"PAID", "UNKNOWN"}),
+            "skipped_json": json.dumps([d for d in decisions if not d["eligible"]])
+            if count == 1
+            else None,
+        }
+        qm_headers = {
+            "X-QuotaMesh-Profile": "default",
+            "X-QuotaMesh-Provider": selected["provider_id"],
+            "X-QuotaMesh-Model": safe_header(selected["model"]),
+            "X-QuotaMesh-Key": safe_header(selected["label"]),
+            "X-QuotaMesh-Attempts": str(count),
+            "X-QuotaMesh-Fallback": str(count > 1).lower(),
+            "X-QuotaMesh-Request-Id": request_id,
+        }
+        forwarded = dict(payload, model=selected["model"])
+        headers = {
+            "Authorization": f"Bearer {secret}",
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream" if streamed else "application/json",
+            "Accept-Encoding": "identity",
+        }
+        upstream = None
+        body = b""
+        status = 502
+        media_type = "application/json"
+        outcome = None
+        metadata = {}
+        first = remainder = b""
+        chunks = None
         try:
-            body = await upstream.aread()
-        except httpx.HTTPError:
-            await upstream.aclose()
+            async with asyncio.timeout(remaining):
+                client = request.app.state.client
+                upstream_request = client.build_request(
+                    "POST",
+                    connection["base_url"].rstrip("/") + "/chat/completions",
+                    content=json.dumps(
+                        forwarded, separators=(",", ":"), ensure_ascii=False
+                    ).encode(),
+                    headers=headers,
+                )
+                upstream = await client.send(upstream_request, stream=True)
+                status = upstream.status_code
+                media_type = upstream.headers.get("content-type", "application/json").split(";")[0]
+                if 300 <= status < 400:
+                    outcome = Outcome("redirect", True, "target", "DEGRADED")
+                    status = 502
+                elif status >= 400 or not streamed:
+                    body = await upstream.aread()
+                    outcome = classify(
+                        selected["provider_id"], status, upstream.headers, body, datetime.now(UTC)
+                    )
+                    if status < 400:
+                        try:
+                            if not isinstance(json.loads(body), dict):
+                                raise TypeError("Expected an object")
+                        except (ValueError, TypeError, UnicodeDecodeError):
+                            outcome = Outcome("protocol", True, "target", "DEGRADED")
+                            status = 502
+                            body = b""
+                    if outcome.kind == "ok":
+                        metadata = usage_metadata(body, selected)
+                elif media_type != "text/event-stream":
+                    outcome = Outcome("protocol", True, "target", "DEGRADED")
+                    status = 502
+                else:
+                    chunks = upstream.aiter_bytes()
+                    # SSE comments/keepalives do not commit a model response.
+                    preface = b""
+                    pending = b""
+                    while True:
+
+                        async def pending_chunks(pending=pending, chunks=chunks):
+                            if pending:
+                                yield pending
+                            async for chunk in chunks:
+                                yield chunk
+
+                        first, remainder = await first_sse_event(pending_chunks(), remaining)
+                        event = sse_payload(first)
+                        if event is None:
+                            preface += first
+                            if len(preface) > MAX_FIRST_EVENT_BYTES:
+                                raise ValueError("Too many SSE keepalives before response")
+                            pending = remainder
+                            continue
+                        if "error" in event or first_event_is_error(first):
+                            error = event.get("error") or {}
+                            error_status = (
+                                error.get("status", error.get("code", 502))
+                                if isinstance(error, dict)
+                                else 502
+                            )
+                            if not isinstance(error_status, int) or not 400 <= error_status <= 599:
+                                error_status = 502
+                            outcome = classify(
+                                selected["provider_id"],
+                                error_status,
+                                upstream.headers,
+                                json.dumps(event).encode(),
+                                datetime.now(UTC),
+                            )
+                            status = 502
+                        else:
+                            first = preface + first
+                            outcome = Outcome("ok", False)
+                        break
+        except asyncio.CancelledError:
+            if upstream:
+                await upstream.aclose()
             _record_attempt(
                 request,
                 **details,
-                outcome="NETWORK_ERROR",
-                error_class="network",
+                outcome="CLIENT_CANCELLED",
                 http_status=None,
+                error_class="cancelled",
                 latency_ms=int((time.monotonic() - started) * 1000),
             )
-            return api_error(502, "Upstream response failed", "upstream_connection")
-        finally:
-            await upstream.aclose()
-        input_tokens, output_tokens = (
-            _usage(body) if upstream.status_code < 400 else (None, None)
-        )
-        _record_attempt(
-            request,
-            **details,
-            outcome="OK" if upstream.status_code < 400 else "UPSTREAM_ERROR",
-            http_status=upstream.status_code,
-            error_class=None if upstream.status_code < 400 else "upstream",
-            latency_ms=int((time.monotonic() - started) * 1000),
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-        )
-        return Response(
-            body,
-            status_code=upstream.status_code,
-            media_type=media_type,
-            headers=qm_headers,
-        )
-
-    if media_type != "text/event-stream":
-        await upstream.aclose()
-        _record_attempt(
-            request,
-            **details,
-            outcome="PROTOCOL_ERROR",
-            error_class="protocol",
-            http_status=502,
-            latency_ms=int((time.monotonic() - started) * 1000),
-        )
-        return api_error(502, "Expected an upstream SSE stream", "upstream_protocol")
-
-    chunks = upstream.aiter_bytes()
-    try:
-        first, remainder = await first_sse_event(chunks, 30)
-    except (TimeoutError, httpx.HTTPError, ValueError):
-        await upstream.aclose()
-        _record_attempt(
-            request,
-            **details,
-            outcome="PRECOMMIT_ERROR",
-            error_class="stream",
-            http_status=502,
-            latency_ms=int((time.monotonic() - started) * 1000),
-        )
-        return api_error(502, "Upstream stream failed before its first event", "upstream_stream")
-    if first_event_is_error(first):
-        await upstream.aclose()
-        _record_attempt(
-            request,
-            **details,
-            outcome="PRECOMMIT_ERROR",
-            error_class="upstream",
-            http_status=502,
-            latency_ms=int((time.monotonic() - started) * 1000),
-        )
-        return api_error(
-            502, "Upstream returned an error before streaming began", "upstream_stream"
-        )
-
-    async def body_stream() -> AsyncIterator[bytes]:
-        outcome = "OK"
-        try:
-            yield first
-            if remainder:
-                yield remainder
-            async for chunk in chunks:
-                yield chunk
-        except asyncio.CancelledError:
-            outcome = "CLIENT_CANCELLED"
             raise
         except (httpx.HTTPError, TimeoutError):
-            outcome = "MID_STREAM_FAILURE"
-            yield b'event: error\ndata: {"error":{"message":"Upstream stream interrupted","type":"upstream_stream"}}\n\n'
-        finally:
-            await upstream.aclose()
-            _record_attempt(
-                request,
-                **details,
-                outcome=outcome,
-                http_status=200,
-                error_class=None if outcome == "OK" else "stream",
-                latency_ms=int((time.monotonic() - started) * 1000),
-            )
+            outcome = Outcome("network", True, "target", "DEGRADED")
+            status = 504 if time.monotonic() >= deadline else 502
+        except (ValueError, UnicodeDecodeError):
+            outcome = Outcome("protocol", True, "target", "DEGRADED")
+            status = 502
+        if streamed and outcome.kind == "ok" and status < 300:
+            apply_outcome(request, selected, outcome)
 
-    return StreamingResponse(body_stream(), media_type="text/event-stream", headers=qm_headers)
+            async def body_stream(
+                first=first,
+                remainder=remainder,
+                chunks=chunks,
+                selected=selected,
+                upstream=upstream,
+                details=details,
+                started=started,
+            ):
+                result, error_class = "OK", None
+                usage = usage_metadata(first.split(b"data:", 1)[-1].strip(), selected)
+                buffer = b""
+                done = False
+                try:
+                    yield first
+
+                    async def rest():
+                        if remainder:
+                            yield remainder
+                        async for chunk in chunks:
+                            yield chunk
+
+                    async for chunk in rest():
+                        # Inspection is bounded and metadata-only; bytes pass through unchanged.
+                        buffer += chunk
+                        while (end := _sse_end(buffer)) >= 0:
+                            event_bytes, buffer = buffer[:end], buffer[end:]
+                            if len(event_bytes) > MAX_FIRST_EVENT_BYTES:
+                                continue
+                            data = b"\n".join(
+                                line[5:].lstrip()
+                                for line in event_bytes.splitlines()
+                                if line.startswith(b"data:")
+                            )
+                            if data == b"[DONE]":
+                                done = True
+                            elif data:
+                                try:
+                                    obj = json.loads(data)
+                                    if isinstance(obj, dict) and obj.get("usage"):
+                                        usage = usage_metadata(data, selected)
+                                    if isinstance(obj, dict) and "error" in obj:
+                                        result, error_class = "MID_STREAM_FAILURE", "stream"
+                                except (ValueError, UnicodeDecodeError):
+                                    pass
+                        if len(buffer) > MAX_FIRST_EVENT_BYTES:
+                            buffer = b""
+                        yield chunk
+                        if error_class:
+                            break
+                    if not done and result == "OK":
+                        result, error_class = "MID_STREAM_FAILURE", "stream"
+                        yield b'event: error\ndata: {"error":{"message":"Upstream ended before DONE","type":"upstream_stream"}}\n\n'
+                except (asyncio.CancelledError, GeneratorExit):
+                    result, error_class = "CLIENT_CANCELLED", "cancelled"
+                    raise
+                except (httpx.HTTPError, TimeoutError):
+                    result, error_class = "MID_STREAM_FAILURE", "stream"
+                    yield b'event: error\ndata: {"error":{"message":"Upstream stream interrupted","type":"upstream_stream"}}\n\n'
+                finally:
+                    await upstream.aclose()
+                    _record_attempt(
+                        request,
+                        **details,
+                        **usage,
+                        outcome=result,
+                        http_status=200,
+                        error_class=error_class,
+                        latency_ms=int((time.monotonic() - started) * 1000),
+                    )
+
+            return StreamingResponse(
+                body_stream(), media_type="text/event-stream", headers=qm_headers
+            )
+        if upstream:
+            await upstream.aclose()
+        apply_outcome(request, selected, outcome)
+        label = (
+            "OK"
+            if outcome.kind == "ok"
+            else "PRECOMMIT_ERROR"
+            if streamed and status == 502
+            else "UPSTREAM_ERROR"
+        )
+        # Known rejected requests carry zero charge; uncertain transport failures remain unknown.
+        if details["paid"] and status >= 400 and outcome.kind not in {"network", "protocol"}:
+            metadata["provider_cost_usd"] = 0
+        _record_attempt(
+            request,
+            **details,
+            **metadata,
+            outcome=label,
+            http_status=status,
+            error_class=None if outcome.kind == "ok" else outcome.kind,
+            latency_ms=int((time.monotonic() - started) * 1000),
+        )
+        last_response = (
+            Response(body, status_code=status, media_type=media_type, headers=qm_headers)
+            if body and status != 502
+            else api_error(status, "Upstream attempt failed before commitment", outcome.kind)
+        )
+        last_response.headers.update(qm_headers)
+        if not outcome.retry:
+            return last_response
+        if outcome.scope == "next_target":
+            context_skip.add(selected["position"])
+    if time.monotonic() >= deadline:
+        return api_error(504, "Route attempt deadline exceeded", "deadline_exceeded")
+    if last_response:
+        return last_response
+    return blocked_response(decisions)
 
 
 @router.get("/v1/models")
 def models(request: Request) -> Response:
-    """Expose the single model alias accepted by the Phase 1 gateway."""
     if not bearer_authorized(request):
         return api_error(401, "Invalid local gateway key", "unauthorized")
-    connection = request.app.state.store.connection_summary()
-    models_list = (
-        [{"id": "qm/default", "object": "model", "owned_by": "quotamesh"}] if connection else []
+    _, profile, _ = decision_snapshot(request.app)
+    return JSONResponse(
+        {
+            "object": "list",
+            "data": [{"id": "qm/default", "object": "model", "owned_by": "quotamesh"}]
+            if profile
+            else [],
+        }
     )
-    return JSONResponse({"object": "list", "data": models_list})

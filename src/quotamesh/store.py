@@ -24,6 +24,7 @@ class Store:
         if os.name != "nt":
             self.data_dir.chmod(0o700)
         self.path = data_dir / "quotamesh.db"
+        self.accounting_marker = data_dir / "paid-accounting-incomplete"
         self._migrate()
 
     @contextmanager
@@ -45,7 +46,7 @@ class Store:
         with self.connection() as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             version = conn.execute("PRAGMA user_version").fetchone()[0]
-            if version > 1:
+            if version > 2:
                 raise RuntimeError(f"Database schema {version} is newer than this QuotaMesh build")
             if version == 0:
                 conn.executescript(
@@ -95,6 +96,33 @@ class Store:
                     COMMIT;
                     """
                 )
+            if version < 2:
+                conn.executescript("""
+                    BEGIN;
+                    ALTER TABLE project_profiles ADD COLUMN allow_unknown_price INTEGER NOT NULL DEFAULT 0;
+                    ALTER TABLE profile_targets ADD COLUMN input_price REAL;
+                    ALTER TABLE profile_targets ADD COLUMN output_price REAL;
+                    ALTER TABLE attempts ADD COLUMN paid INTEGER NOT NULL DEFAULT 0;
+                    ALTER TABLE attempts ADD COLUMN skipped_json TEXT;
+                    CREATE TABLE quota_state (
+                      quota_group TEXT NOT NULL, model TEXT NOT NULL, status TEXT NOT NULL,
+                      until TEXT, strikes INTEGER NOT NULL DEFAULT 0, reason TEXT,
+                      PRIMARY KEY(quota_group, model)
+                    );
+                    CREATE TABLE daily_usage (
+                      day TEXT NOT NULL, profile_id INTEGER NOT NULL,
+                      cost_usd REAL NOT NULL DEFAULT 0, unknown_cost INTEGER NOT NULL DEFAULT 0,
+                      PRIMARY KEY(day, profile_id)
+                    );
+                    UPDATE project_profiles SET max_attempts=5;
+                    UPDATE attempts SET paid=1 WHERE credential_id IN
+                        (SELECT id FROM credentials WHERE plan_type IN ('PAID','UNKNOWN'));
+                    INSERT INTO daily_usage(day,profile_id,cost_usd,unknown_cost)
+                        SELECT substr(ts,1,10),profile_id,0,count(*) FROM attempts
+                        WHERE paid=1 GROUP BY substr(ts,1,10),profile_id;
+                    PRAGMA user_version=2;
+                    COMMIT;
+                """)
         if os.name != "nt":
             self.path.chmod(0o600)
 
@@ -122,6 +150,11 @@ class Store:
         secret_value: str | None,
         env_name: str | None,
         allow_paid: bool,
+        quota_group: str | None = None,
+        trial_expires_at: str | None = None,
+        priority: int = 0,
+        input_price: float | None = None,
+        output_price: float | None = None,
     ) -> None:
         now = utc_now()
         fingerprint = hashlib.sha256((secret_value or env_name or "").encode()).hexdigest()[:12]
@@ -134,6 +167,10 @@ class Store:
                    (id, provider_id, label, plan_type, base_url, fingerprint, created_at, updated_at)
                    VALUES (1, ?, ?, ?, ?, ?, ?, ?)""",
                 (provider_id, label, plan_type, base_url, fingerprint, now, now),
+            )
+            conn.execute(
+                "UPDATE credentials SET quota_group=?,trial_expires_at=?,priority=? WHERE id=1",
+                (quota_group, trial_expires_at, priority),
             )
             conn.execute(
                 "INSERT INTO secrets (credential_id, secret_value, env_name) VALUES (1, ?, ?)",
@@ -149,6 +186,11 @@ class Store:
                    (profile_id, position, provider_id, model, credential_id)
                    VALUES (1, 1, ?, ?, 1)""",
                 (provider_id, model),
+            )
+            conn.execute(
+                "UPDATE profile_targets SET input_price=?,output_price=? "
+                "WHERE profile_id=1 AND position=1",
+                (input_price, output_price),
             )
 
     def connection_summary(self) -> dict[str, Any] | None:
@@ -194,12 +236,26 @@ class Store:
             "output_tokens",
             "provider_cost_usd",
             "estimated_cost_usd",
+            "paid",
+            "skipped_json",
         )
         with self.connection() as conn:
             conn.execute(
                 f"INSERT INTO attempts ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
-                [values.get(column) for column in columns],
+                [values.get(column, 0 if column == "paid" else None) for column in columns],
             )
+
+            if values.get("paid"):
+                cost = values.get("provider_cost_usd")
+                if cost is None:
+                    cost = values.get("estimated_cost_usd")
+                conn.execute(
+                    """INSERT INTO daily_usage(day,profile_id,cost_usd,unknown_cost)
+                    VALUES (?,?,?,?) ON CONFLICT(day,profile_id) DO UPDATE SET
+                    cost_usd=cost_usd+excluded.cost_usd,
+                    unknown_cost=unknown_cost+excluded.unknown_cost""",
+                    (values["ts"][:10], values["profile_id"], cost or 0, int(cost is None)),
+                )
 
     def recent_attempts(self, limit: int = 10) -> list[dict[str, Any]]:
         with self.connection() as conn:
@@ -207,7 +263,152 @@ class Store:
                 dict(row)
                 for row in conn.execute(
                     """SELECT ts, request_id, provider_id, model, outcome, http_status,
-                          latency_ms, streamed FROM attempts ORDER BY id DESC LIMIT ?""",
+                          latency_ms, streamed, attempt_idx, error_class, skipped_json,
+                          provider_cost_usd, estimated_cost_usd FROM attempts ORDER BY id DESC LIMIT ?""",
                     (limit,),
                 )
             ]
+
+    def routing_snapshot(self, now):
+        with self.connection() as conn:
+            row = conn.execute("SELECT * FROM project_profiles WHERE id=1").fetchone()
+            profile = dict(row) if row else None
+            targets = [
+                dict(r)
+                for r in conn.execute(
+                    "SELECT * FROM profile_targets WHERE profile_id=1 ORDER BY position"
+                )
+            ]
+            credentials = [
+                dict(r)
+                for r in conn.execute(
+                    "SELECT c.*,s.secret_value,s.env_name FROM credentials c "
+                    "JOIN secrets s ON c.id=s.credential_id"
+                )
+            ]
+            states = {
+                (r["quota_group"], r["model"]): dict(r)
+                for r in conn.execute("SELECT * FROM quota_state")
+            }
+            day, month = now.date().isoformat(), now.strftime("%Y-%m")
+            usage = {
+                "daily": 0,
+                "monthly": 0,
+                "unknown": False,
+                "unknown_daily": False,
+                "unknown_monthly": False,
+            }
+            for r in conn.execute(
+                "SELECT * FROM daily_usage WHERE profile_id=1 AND day LIKE ?", (month + "%",)
+            ):
+                usage["monthly"] += r["cost_usd"]
+                usage["unknown"] |= bool(r["unknown_cost"])
+                usage["unknown_monthly"] |= bool(r["unknown_cost"])
+                if r["day"] == day:
+                    usage["daily"] += r["cost_usd"]
+                    usage["unknown_daily"] |= bool(r["unknown_cost"])
+            return profile, targets, credentials, states, usage
+
+    def safe_routing(self, now):
+        profile, targets, credentials, states, usage = self.routing_snapshot(now)
+        for c in credentials:
+            c.pop("secret_value", None)
+        return {
+            "profile": profile,
+            "targets": targets,
+            "credentials": credentials,
+            "quota_states": list(states.values()),
+            "usage": usage,
+        }
+
+    def add_credential(self, **values):
+        now = utc_now()
+        secret = values.pop("secret_value")
+        env = values.pop("env_name")
+        values.pop("allow_paid", None)
+        values.pop("model", None)
+        values.pop("input_price", None)
+        values.pop("output_price", None)
+        values.update(
+            created_at=now,
+            updated_at=now,
+            fingerprint=hashlib.sha256((secret or env).encode()).hexdigest()[:12],
+        )
+        with self.connection() as conn:
+            cursor = conn.execute(
+                f"INSERT INTO credentials ({','.join(values)}) VALUES ({','.join('?' for _ in values)})",
+                list(values.values()),
+            )
+            identifier = cursor.lastrowid
+            conn.execute("INSERT INTO secrets VALUES (?,?,?)", (identifier, secret, env))
+            return identifier
+
+    def save_policy(self, policy, targets):
+        with self.connection() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO project_profiles(id,name,slug,max_attempts) "
+                "VALUES(1,'Default','default',5)"
+            )
+            conn.execute(
+                "UPDATE project_profiles SET " + ",".join(k + "=?" for k in policy) + " WHERE id=1",
+                list(policy.values()),
+            )
+            conn.execute("DELETE FROM profile_targets WHERE profile_id=1")
+            for position, target in enumerate(targets, 1):
+                conn.execute(
+                    """INSERT INTO profile_targets
+                    (profile_id,position,provider_id,model,credential_id,input_price,output_price)
+                    VALUES(1,?,?,?,?,?,?)""",
+                    (
+                        position,
+                        target["provider_id"],
+                        target["model"],
+                        target["credential_id"],
+                        target["input_price"],
+                        target["output_price"],
+                    ),
+                )
+
+    def apply_outcome(self, decision, outcome, now):
+        from quotamesh.engine.classify import next_quota_state
+
+        if outcome.scope == "credential":
+            with self.connection() as conn:
+                conn.execute(
+                    "UPDATE credentials SET status=?,status_reason=?,updated_at=? WHERE id=?",
+                    (outcome.state, outcome.kind, now.isoformat(), decision["credential_id"]),
+                )
+        elif outcome.scope == "quota" or outcome.kind == "ok":
+            with self.connection() as conn:
+                key = (decision["quota_group"], decision["model"])
+                row = conn.execute(
+                    "SELECT * FROM quota_state WHERE quota_group=? AND model=?", key
+                ).fetchone()
+                if (
+                    outcome.kind == "ok"
+                    and row
+                    and row["until"]
+                    and datetime.fromisoformat(row["until"]) > now
+                ):
+                    # A success already in flight must not erase a more recent throttle.
+                    return
+                state = next_quota_state(dict(row) if row else {}, outcome, now)
+                conn.execute(
+                    """INSERT INTO quota_state VALUES(?,?,?,?,?,?)
+                    ON CONFLICT(quota_group,model) DO UPDATE SET status=excluded.status,
+                    until=excluded.until,strikes=excluded.strikes,reason=excluded.reason""",
+                    (*key, state["status"], state["until"], state["strikes"], state["reason"]),
+                )
+
+    def reset_credential(self, identifier):
+        from quotamesh.engine.select import quota_key
+
+        with self.connection() as conn:
+            row = conn.execute("SELECT * FROM credentials WHERE id=?", (identifier,)).fetchone()
+            if not row:
+                raise ValueError("Credential does not exist")
+            conn.execute(
+                "UPDATE credentials SET status='ACTIVE',status_reason=NULL WHERE id=?",
+                (identifier,),
+            )
+            conn.execute("DELETE FROM quota_state WHERE quota_group=?", (quota_key(dict(row)),))
