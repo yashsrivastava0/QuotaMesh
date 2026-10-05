@@ -239,7 +239,7 @@ async def test_large_body_stops_before_upstream(tmp_path, monkeypatch):
         return httpx.Response(200)
 
     app, key, configuration = configured_app(tmp_path, upstream)
-    monkeypatch.setattr("quotamesh.app.MAX_BODY_BYTES", 32)
+    monkeypatch.setattr("quotamesh.routes.gateway.MAX_BODY_BYTES", 32)
     auth = {"Authorization": f"Bearer {key}"}
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://testserver"

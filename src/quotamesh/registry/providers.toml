@@ -8,3 +8,20 @@ last_verified = "2026-10-02"
 name = "Custom OpenAI-compatible"
 base_url = ""
 last_verified = "2026-10-02"
+
+# Endpoint and project/reset scope rechecked against Google docs on 2026-10-06.
+[providers.gemini]
+name = "Google Gemini (OpenAI compatibility)"
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+last_verified = "2026-10-06"
+
+# Presets only: classifier fixtures are tested; real-provider smoke checks need user keys.
+[providers.groq]
+name = "Groq"
+base_url = "https://api.groq.com/openai/v1"
+last_verified = "2026-10-02"
+
+[providers.nim]
+name = "NVIDIA NIM"
+base_url = "https://integrate.api.nvidia.com/v1"
+last_verified = "2026-10-02"
