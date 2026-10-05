@@ -63,19 +63,21 @@ def classify(provider, status, headers, body, now):
     except (ValueError, UnicodeDecodeError):
         error = None
     text = json.dumps(error).lower() if error else ""
-    if status == 401 or any(
-        word in text
-        for word in (
-            "api_key_invalid",
-            "api_key_expired",
-            "api key expired",
-            "invalid api key",
-            "api key not valid",
-            "expired api key",
-            "invalid_api_key",
-            "revoked",
-            "leaked",
+    if (
+        status == 401
+        or any(
+            word in text
+            for word in (
+                "api_key_invalid",
+                "api_key_expired",
+                "api key expired",
+                "invalid api key",
+                "api key not valid",
+                "expired api key",
+                "invalid_api_key",
+            )
         )
+        or ("key" in text and any(word in text for word in ("revoked", "leaked", "expired")))
     ):
         return Outcome("auth", True, "credential", "INVALID")
     if status == 402 or any(
@@ -142,12 +144,12 @@ def sse_payload(event):
 
 
 def valid_price(value):
-    return (
-        isinstance(value, (int, float))
-        and not isinstance(value, bool)
-        and math.isfinite(value)
-        and value >= 0
-    )
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
 
 
 def usage_metadata(body, decision):
@@ -156,7 +158,8 @@ def usage_metadata(body, decision):
         usage = obj.get("usage") or {}
         tokens = [usage.get("prompt_tokens"), usage.get("completion_tokens")]
         tokens = [
-            n if isinstance(n, int) and not isinstance(n, bool) and n >= 0 else None for n in tokens
+            n if isinstance(n, int) and not isinstance(n, bool) and 0 <= n <= 2**63 - 1 else None
+            for n in tokens
         ]
         cost = usage.get("cost_usd")
         if cost is None and decision.get("provider_id") == "openrouter":

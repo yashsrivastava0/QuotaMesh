@@ -620,3 +620,67 @@ async def test_protocol_first_event_and_missing_secret_never_consume_skip_attemp
         response = await call(client, auth, stream=True)
         assert response.status_code == 200 and response.headers["x-quotamesh-attempts"] == "2"
     assert calls == ["Bearer fake-2", "Bearer fake-2"]
+
+
+@pytest.mark.parametrize(
+    ("status", "error", "headers", "state"),
+    [
+        (400, {"message": "API key not valid"}, {}, "INVALID"),
+        (429, {"message": "Quota exceeded: requests per day"}, {"Retry-After": "120"}, "EXHAUSTED"),
+    ],
+)
+async def test_gemini_body_failure_persists_correct_scope(tmp_path, status, error, headers, state):
+    calls = []
+
+    def handler(req):
+        calls.append(req)
+        return (
+            httpx.Response(status, json={"error": error}, headers=headers)
+            if len(calls) == 1
+            else httpx.Response(200, json={"choices": []})
+        )
+
+    app, client, auth = await setup(
+        tmp_path,
+        handler,
+        keys=[{"provider_id": "gemini"}, {"provider_id": "gemini"}],
+        targets=[{"provider_id": "gemini", "model": "test-model"}],
+    )
+    async with client:
+        assert (await call(client, auth)).status_code == 200
+    routing = app.state.store.safe_routing(datetime.now(UTC))
+    if state == "INVALID":
+        assert routing["credentials"][0]["status"] == "INVALID"
+        assert routing["credentials"][1]["status"] == "ACTIVE"
+    else:
+        assert (
+            next(q for q in routing["quota_states"] if q["quota_group"] == "gemini:account-1")[
+                "status"
+            ]
+            == state
+        )
+
+
+async def test_404_skips_same_model_pool_and_moves_target(tmp_path):
+    calls = []
+
+    def handler(req):
+        model = json.loads(req.content)["model"]
+        calls.append(model)
+        return (
+            httpx.Response(404, json={"error": {"message": "model not found"}})
+            if model == "missing"
+            else httpx.Response(200, json={"choices": []})
+        )
+
+    _, client, auth = await setup(
+        tmp_path,
+        handler,
+        targets=[
+            {"provider_id": "custom", "model": "missing"},
+            {"provider_id": "custom", "model": "exists"},
+        ],
+    )
+    async with client:
+        assert (await call(client, auth)).status_code == 200
+    assert calls == ["missing", "exists"]

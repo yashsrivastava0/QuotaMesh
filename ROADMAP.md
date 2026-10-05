@@ -14,7 +14,9 @@ Source: `QuotaMesh_MVP_Architecture_Product_Spec_v0.3.pdf` (all 65 pages reviewe
 
 The gateway is the product's trust boundary. Auth, secret handling, raw request preservation, streaming commitment, and metadata-only persistence must work before the selector or wallet can safely depend on them. A thin setup UI makes this a usable vertical slice rather than an engine without a user path. The fake upstream allows verification without consuming provider quota.
 
-## Phase 1 assumptions and boundaries
+## Phase 1 original assumptions and boundaries
+
+These describe the first milestone; phase two supersedes the single-target/fallback/cap limitations below.
 
 - The repository initially contained only the spec PDF and `.codex/config.toml`; there was no source, README, `AGENTS.md`, or Git repository to preserve or extend.
 - Phase 1 supports one default profile target and one configured credential at a time. Its model is entered by the user; no static model catalog or discovery is used. Full profiles, pools, automatic fallback, cooldowns, caps, wallet/accounting views, Doctor, catalog, and protocol translation are later phases.
@@ -22,3 +24,17 @@ The gateway is the product's trust boundary. Auth, secret handling, raw request 
 - Paid and unknown-plan use remain off by default. The setup form requires explicit opt-in if such a credential is to serve requests. Dollar caps are Phase 2, so the UI describes this limit clearly.
 - Local attempt metadata covers traffic through QuotaMesh only. No prompt or response bodies are stored. Upstream API secrets are stored in a restricted local SQLite file or referenced from the process environment; native keyring storage is deferred by the spec.
 - A first response event is the streaming commitment point. Phase 1 returns pre-commit upstream errors to the client and does not retry another target because target selection is Phase 2.
+
+
+## Phase two delivered
+
+The deterministic engine supports one default policy with ordered targets, provider pools
+and pinned keys, persisted quota-group/model state, body-aware classification, expiry,
+local daily/monthly paid caps, and safe pre-commit fallback. A route lab and isolated demo
+are included so the engine can be tested without provider credentials. The small credential
+add/enable/disable/reset UI and daily dollar rollups are prerequisites for testing phase two,
+not the full wallet/profile milestone. See [the implementation plan](docs/phase-two-plan.md).
+
+Named profiles, full wallet statistics, model discovery/Doctor, integration generators,
+and the Access Catalog remain phases three and four. Synthetic tests and a running browser
+demo are verified; live-provider smoke checks require authorized keys and models.

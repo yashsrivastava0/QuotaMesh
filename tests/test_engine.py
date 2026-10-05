@@ -235,3 +235,12 @@ def test_daily_unknown_spend_does_not_leak_into_next_day_only_cap():
         ]
         == "unknown_spend"
     )
+
+
+def test_empty_pool_is_explained_and_disabled_route_is_blocked():
+    decisions = candidates(PROFILE, [TARGET], [], {}, {}, NOW)
+    assert decisions[0]["skip_reason"] == "no_credentials"
+    assert (
+        candidates(PROFILE | {"enabled": 0}, [TARGET], [KEY], {}, {}, NOW)[0]["skip_reason"]
+        == "disabled"
+    )

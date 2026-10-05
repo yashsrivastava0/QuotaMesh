@@ -53,7 +53,7 @@ not the entire product MVP. Named profiles and a full wallet remain phase three.
   Independent labels do not manufacture independent quota.
 - Explicit Retry-After takes precedence. Unknown 429s use the PDF ladder and
   remain COOLDOWN. Daily exhaustion requires both daily evidence and a reset.
-- Model/provider transient blocks last 30 seconds in memory. Auth and billing
+- Credential/model 403 and provider/model transient blocks last 30 seconds in memory. Auth and billing
   failures persist until an explicit recovery action. Resetting a credential
   clears its shared quota group; the UI must say so.
 - Paid/unknown-plan credentials require explicit paid permission. Optional daily
@@ -61,7 +61,7 @@ not the entire product MVP. Named profiles and a full wallet remain phase three.
   Caps check observed spend before selection, not provider billing totals or
   guaranteed preflight reservations. Concurrent/in-flight cost can overshoot.
 - No speculative model prices. Users can supply both USD-per-million token
-  prices. Provider `usage.cost` (USD) wins over the local token-price estimate.
+  prices. Explicit provider `usage.cost_usd` (USD) wins over the local token-price estimate.
   Missing token usage stays unknown. With a cap, unknown price/spend blocks paid
   routing unless the user explicitly opts out of that protection.
 - Dollar rollups are the minimal phase-two accounting prerequisite, not full
@@ -73,3 +73,16 @@ not the entire product MVP. Named profiles and a full wallet remain phase three.
   automatic price updates, external services, or automatic `.env` loading.
 - Provider-free tests establish engine behavior, not real-account connectivity
   or production readiness for every compatible endpoint.
+
+
+## Validation evidence
+
+- Phase-one baseline issue corrected; authenticated raw pass-through, Host/origin checks,
+  redirect blocking, body size, stream commitment, and secret/body redaction remain covered.
+- 69 automated tests currently pass. Coverage includes the PDF failure/paid-safety matrix,
+  body-aware Gemini errors, documented reset headers, scoped model-access blocks, pool
+  ordering, unknown cost handling, expiry, attempt budgets, both deadlines, concurrent
+  routing after cooldown, late-success overlap, cancellation, and additive v1 migration.
+- Real Chromium smoke verifies all six loopback demo scenarios, saving policy fields,
+  adding credentials/targets, rendered streaming/error output, and mobile overflow.
+- Ruff and JavaScript syntax checks pass. Source/wheel builds and a fresh installed-wheel CLI/dashboard/fallback smoke pass; live provider requests remain unrun without user keys.

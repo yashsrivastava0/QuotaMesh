@@ -31,6 +31,23 @@ def candidates(profile, targets, credentials, states, usage, now, degraded=None)
             ],
             key=lambda c: (c["priority"], c["id"]),
         )
+        if not pool:
+            decisions.append(
+                {
+                    "position": target["position"],
+                    "provider_id": target["provider_id"],
+                    "model": target["model"],
+                    "credential_id": None,
+                    "label": "Provider pool",
+                    "plan_type": "UNKNOWN",
+                    "quota_group": None,
+                    "eligible": False,
+                    "skip_reason": "no_credentials",
+                    "recovery_at": None,
+                    "input_price": target.get("input_price"),
+                    "output_price": target.get("output_price"),
+                }
+            )
         for c in pool:
             reason, recovery = None, None
             state = states.get((quota_key(c), target["model"]), {})
