@@ -2,7 +2,7 @@
 
 ## Project context
 
-QuotaMesh is a local AI API capacity gateway. The product reference is [`QuotaMesh_MVP_Architecture_Product_Spec_v0.3.pdf`](QuotaMesh_MVP_Architecture_Product_Spec_v0.3.pdf); the implementation sequence and boundaries are in [`ROADMAP.md`](ROADMAP.md). The current implementation includes Phase 1 secure pass-through and Phase 2 deterministic routing, ordered pools, scoped cooldowns, expiry, and local paid caps. Keep later phase features out of scope unless requested or a minimal prerequisite is necessary and documented.
+QuotaMesh is a local AI API capacity gateway. The product reference is [`QuotaMesh_MVP_Architecture_Product_Spec_v0.3.pdf`](QuotaMesh_MVP_Architecture_Product_Spec_v0.3.pdf); the implementation sequence and boundaries are in [`ROADMAP.md`](ROADMAP.md). The current implementation includes Phase 1 secure pass-through, Phase 2 deterministic routing, ordered pools, scoped cooldowns, expiry, and local paid caps, and Phase 3 Capacity Wallet, named profiles, credential lifecycle and durable usage/history. Keep later phase features out of scope unless requested or a minimal prerequisite is necessary and documented.
 
 ## Start each task
 
@@ -16,6 +16,7 @@ QuotaMesh is a local AI API capacity gateway. The product reference is [`QuotaMe
 - `src/quotamesh/engine/`: pure selection, classification, quota transitions, and cost metadata.
 - `src/quotamesh/routing.py` and `policy.py`: runtime snapshots and validated local policy.
 - `src/quotamesh/app.py`: application factory, shared state, process lifecycle, and router wiring.
+- `src/quotamesh/routes/wallet.py`, `wallet.py`, `usage.py`, and `credentials.py`: profile/credential management, grouped capacity and honest durable observations.
 - `src/quotamesh/routes/dashboard.py`: first-run bootstrap, setup UI, status, and connection management.
 - `src/quotamesh/routes/gateway.py`: authenticated Chat Completions proxy and SSE transport.
 - `src/quotamesh/security.py`: local host/origin checks and browser/bearer authorization.

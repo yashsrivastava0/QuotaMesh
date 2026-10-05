@@ -1,8 +1,8 @@
-# Phase two architecture
+# Architecture through phase three
 
 One local FastAPI/Uvicorn process owns the gateway, dashboard, shared HTTPX client, and
-SQLite store. No service dependencies or frontend build. One default profile contains
-ordered provider/model targets with optional pinned keys; named profiles are phase three.
+SQLite store. No service dependencies or frontend build. Named project profiles contain ordered provider/model targets with optional pinned keys.
+`qm/default` remains compatible; `qm/<slug>` resolves the corresponding profile.
 
 ## Functional core and shell
 
@@ -19,10 +19,15 @@ ordered provider/model targets with optional pinned keys; named profiles are pha
 - `routes/dashboard.py` validates local configuration and offers the browser management and
   explicit test surface. `/api/test` invokes the same gateway handler without exposing the
   generated bearer key in HTML. Foreign-origin writes are rejected before that handler.
+- `routes/wallet.py` and `credentials.py` provide strict profile/credential CRUD, write-only
+  rotation and metadata usage/history APIs. `wallet.py` groups shared ownership, expiry,
+  allocations and observed state without probes or fabricated quota. `usage.py` aggregates
+  attempts into per-day/profile/key/provider/model/plan rollups with cost evidence counts.
 - `store.py` owns short SQLite transactions, versioned additive migration, write-only
   secrets, metadata attempts, persistent quota state, and durable daily paid spend.
 - `ui/` renders a route lab with small local JavaScript; no third-party assets or direct
-  provider calls. Test response text is transient browser output, not database history.
+  provider calls. The home wallet leads with owned capacity; named profile controls share
+  the selector. Test response text is transient browser output, not database history.
 - `demo.py` supplies synthetic error/response scenarios. The CLI's demo uses a temporary
   store and mounted loopback fake upstream; scenario resets cannot touch normal user data.
 
@@ -34,7 +39,7 @@ ordered provider/model targets with optional pinned keys; named profiles are pha
 | Cooldown / evidenced exhaustion | Provider + quota group + model | SQLite; reset timestamp or manual reset |
 | Model-access 403 | Credential + model | Memory; 30 seconds |
 | Model-not-found 404 / network / 5xx | Provider + model | Memory; 30 seconds |
-| Paid caps | Default profile, UTC day/month | Durable daily rollups; independent of history |
+| Paid caps | Selected profile, UTC day/month | Durable daily rollups; independent of history |
 | Accounting incomplete | Process + safety marker | Paid fails closed across restart |
 
 Default grouping is conservative, except Groq's separate project-specific key defaults
@@ -42,11 +47,34 @@ from the PDF. Users must identify shared project boundaries; labels cannot creat
 A late success does not clear a still-active shared cooldown from an overlapping request.
 After recovery, a successful request resets the strike ladder.
 
-The migration preserves phase-one credentials, targets, and attempts. Legacy paid costs
+Schema v3 preserves phase-one/two credentials, targets, attempts and existing paid totals. Legacy paid costs
 without evidence are marked unknown. Daily paid accounting is updated in the same
-transaction as its attempt row. Missing usage/cost is never silently zeroed; known rejected
-provider requests carry zero observed cost, while uncertain transport/protocol outcomes
-are treated conservatively. Full wallet rollups are deliberately deferred.
+transaction as its attempt row and detailed usage rollup. Missing usage/cost is never silently zeroed; known rejected
+provider requests carry a local zero-cost inference, while uncertain transport/protocol
+outcomes remain unknown. Declared-free success can also infer local zero, never a provider
+measurement. Source counts distinguish missing USD observations from explicit reported zero.
+
+## Identity, ownership and history
+
+Profiles have immutable unique slugs, including archived ones. Their numeric identities
+and paid totals remain after deletion. Default cannot be deleted. Credential deletion
+removes the secret record and archives metadata, preventing ID reuse; pins guard deletion
+and provider changes. Editing metadata keeps the secret unless rotation is explicit.
+A credential revision check prevents an old in-flight 401 from invalidating a rotated key.
+Rotation resets credential invalidity without clearing shared quota or spend.
+
+Wallet ownership is provider + quota group, with conservative defaults. Starting credit
+is taken once for a shared group; conflicting manual values, unknown costs or incomplete
+legacy coverage prevent a numeric remaining estimate. Archived siblings' observed costs
+remain included in their group. Provider changes retain historical rollups without
+attributing another provider's old traffic to the new source. Group/plan edits are manual
+reclassification, not proof of independent quota. Outside-gateway usage is invisible.
+
+Request traces use UUIDs and ordered attempts with captured profile/key labels and plan
+metadata. Cursors paginate complete request groups even when concurrent attempts interleave.
+History is limited to 30 days/50,000 rows; daily rollups remain. Upgrades backfill retained
+v1/v2 detail once and explicitly label missing earlier coverage. Pure API rejects/no-capacity
+responses without upstream attempts do not increment routed-request observation counts.
 
 ## Streaming and cost
 
@@ -71,5 +99,5 @@ raw provider keys in SQLite. No background probes, telemetry, or body logging.
 
 Only Chat Completions is supported. Custom/preset API behavior is synthetic-fixture tested;
 live account/model verification requires the user's authorized keys. See the
-[implementation plan](phase-two-plan.md) for research and assumptions, and the
+[phase-three implementation plan](phase-three-plan.md) for research and assumptions, and the
 [roadmap](../ROADMAP.md) for phase boundaries.

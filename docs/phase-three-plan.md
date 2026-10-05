@@ -75,3 +75,28 @@ profiles; route and stream through their aliases; and read a request's ordered t
 without finding secrets, prompts, or completions in management output/history.
 Pruning/restarts/migrations preserve caps and totals. Existing security and all
 phase-two failure cases remain tested. No user credential is needed for these tests.
+
+## Verification evidence
+
+- 95 automated tests pass, including the 69 phase-one/two regressions and new v2
+  migration/rollback, paid-isolation, named streaming, rotation/restart, shared credit,
+  archived identity, complete-history cursor, durable retention and privacy checks.
+- Ruff and JavaScript syntax checks pass; source and wheel builds pass.
+- Actual Chromium acceptance covers the mixed wallet, shared balance, profile
+  create/switch/disable/delete, credential add/edit/rotate/delete, source badges,
+  streaming, expandable history, safe HTML rendering, all six phase-two scenarios,
+  and a 390-pixel mobile layout. No JavaScript errors were observed.
+- A browser check caught early button re-enabling while metadata refresh was still
+  pending. The send button now remains disabled until the refreshed view arrives.
+- Browser acceptance is in CI alongside the Python 3.11/3.12 test/build matrix.
+- An old in-flight credential rejection cannot invalidate a newly rotated secret.
+  Cost fields outside the single-request manual-money range remain unknown instead
+  of overflowing aggregate JSON. Missing provider USD displays as Not reported.
+
+There are two pending roadmap phases: four and five. No live provider calls or real
+credentials were used; account/model readiness remains an explicit user-side check.
+
+The wheel was installed in a separate virtual environment with fresh runtime dependencies
+and exercised from outside the checkout. CLI startup, packaged templates/assets, normal
+fallback, a named streamed request, shared credit, profile creation, durable usage/history
+and safe CLI status all passed. Normal user data was untouched.

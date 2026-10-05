@@ -26,7 +26,7 @@ These describe the first milestone; phase two supersedes the single-target/fallb
 - A first response event is the streaming commitment point. Phase 1 returns pre-commit upstream errors to the client and does not retry another target because target selection is Phase 2.
 
 
-## Phase two delivered
+## Phase two delivered (historical milestone)
 
 The deterministic engine supports one default policy with ordered targets, provider pools
 and pinned keys, persisted quota-group/model state, body-aware classification, expiry,
@@ -35,6 +35,24 @@ are included so the engine can be tested without provider credentials. The small
 add/enable/disable/reset UI and daily dollar rollups are prerequisites for testing phase two,
 not the full wallet/profile milestone. See [the implementation plan](docs/phase-two-plan.md).
 
-Named profiles, full wallet statistics, model discovery/Doctor, integration generators,
-and the Access Catalog remain phases three and four. Synthetic tests and a running browser
+Named profiles and wallet statistics were subsequently delivered in phase three.
+Model discovery/Doctor, integration generators and the Access Catalog remain phase four. Synthetic tests and a running browser
 demo are verified; live-provider smoke checks require authorized keys and models.
+
+## Phase three delivered
+
+FREE/TRIAL/PAID wallet sources group provider/quota ownership once even with multiple
+keys, with manual starting credit/expiry, observed per-model state and usage, and explicit
+PROVIDER/LOCAL/MANUAL/UNKNOWN badges. Credentials can be added without a model, edited,
+rotated, enabled/disabled, reset or safely archived. Named ordered profiles expose
+`qm/<slug>`, separate permissions/caps, form-only templates, and dynamic pools or pinned
+keys. Usage counts requests separately from attempts; daily rollups survive pruning and
+schema upgrades. Expandable request traces contain metadata only. The isolated demo and
+real-browser checks cover the mixed wallet and named profiles alongside phase-two failures.
+See [the implementation plan](docs/phase-three-plan.md).
+
+**Two phases remain: phase four (Explain/Connect, snippets, Doctor, Access Catalog) and
+phase five (release/cross-platform QA, then separately gated post-MVP extensions).**
+The existing dry-run and synthetic demo are tested foundations for phase four, not a claim
+that its full deliverables are complete. Live provider/account checks still need authorized
+keys and models; no real quota was used in phase-three verification.
