@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import secrets
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
@@ -13,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from quotamesh.config import data_directory
 from quotamesh.routes.dashboard import router as dashboard_router
 from quotamesh.routes.gateway import router as gateway_router
+from quotamesh.routes.wallet import router as wallet_router
 from quotamesh.security import local_host_guard
 from quotamesh.store import Store
 
@@ -27,6 +29,7 @@ def create_app(
 ) -> FastAPI:
     """Create the single-process local dashboard and OpenAI-compatible gateway."""
     store = Store(data_dir or data_directory())
+    store.prune_history(datetime.now(UTC))
     client = httpx.AsyncClient(
         transport=upstream_transport,
         follow_redirects=False,
@@ -55,4 +58,5 @@ def create_app(
     app.mount("/static", StaticFiles(directory=str(UI / "static")), name="static")
     app.include_router(dashboard_router)
     app.include_router(gateway_router)
+    app.include_router(wallet_router)
     return app

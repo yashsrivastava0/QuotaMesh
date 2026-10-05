@@ -62,3 +62,13 @@ def expiry(value):
     if date.tzinfo is None:
         date = date.replace(tzinfo=UTC)
     return date.astimezone(UTC).isoformat()
+
+
+class ProjectProfile(Policy):
+    slug: Annotated[str, Field(min_length=1, max_length=60, pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")]
+    name: Annotated[str, Field(min_length=1, max_length=100)]
+
+    def validate_targets(self, credentials):
+        super().validate_targets(credentials)
+        if any(ord(c) < 32 or ord(c) == 127 for c in self.name) or not self.name.strip():
+            raise ValueError("Profile name must be printable")

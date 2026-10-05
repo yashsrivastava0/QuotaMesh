@@ -12,6 +12,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.templating import Jinja2Templates
 
 from quotamesh.config import registry, validate_base_url, validate_env_name
+from quotamesh.credentials import CredentialCreate
 from quotamesh.engine.classify import valid_price
 from quotamesh.policy import CredentialAction, Policy, expiry
 from quotamesh.routing import decision_snapshot
@@ -158,14 +159,14 @@ async def save_connection_form(request: Request) -> Response:
 
 
 @router.get("/api/status")
-def api_status(request: Request) -> Response:
+def api_status(request: Request, profile: str = "default") -> Response:
     if not management_authorized(request):
         return api_error(401, "Local authorization required", "unauthorized")
     store = request.app.state.store
     return JSONResponse(
         {
-            "routing": store.safe_routing(datetime.now(UTC)),
-            "decisions": decision_snapshot(request.app)[0],
+            "routing": store.safe_routing(datetime.now(UTC), profile),
+            "decisions": decision_snapshot(request.app, profile)[0],
             "connection": store.connection_summary(),
             "recent_attempts": store.recent_attempts(),
             "diagnostic_write_failures": request.app.state.diagnostic_write_failures,
@@ -192,7 +193,7 @@ async def add_credential(request: Request):
     if not management_authorized(request):
         return api_error(401, "Local authorization required", "unauthorized")
     try:
-        values = validate_connection(await request.json())
+        values = CredentialCreate.model_validate(await request.json()).validated()
         identifier = request.app.state.store.add_credential(**values)
     except (ValueError, TypeError, AttributeError):
         return api_error(400, "Invalid credential configuration", "invalid_configuration")
@@ -221,10 +222,10 @@ async def save_policy(request: Request):
 
 
 @router.get("/api/dry-run")
-def dry_run(request: Request):
+def dry_run(request: Request, profile: str = "default"):
     if not management_authorized(request):
         return api_error(401, "Local authorization required", "unauthorized")
-    decisions, profile, _ = decision_snapshot(request.app)
+    decisions, profile, _ = decision_snapshot(request.app, profile)
     return JSONResponse(
         {
             "decisions": decisions,
@@ -241,6 +242,10 @@ async def credential_action(identifier: int, request: Request):
     try:
         action = CredentialAction.model_validate(await request.json()).action
         store = request.app.state.store
+        if not any(
+            c["id"] == identifier for c in store.safe_routing(datetime.now(UTC))["credentials"]
+        ):
+            return api_error(404, "Credential not found", "credential_not_found")
         if action == "reset":
             store.reset_credential(identifier)
             request.app.state.degraded.clear()
