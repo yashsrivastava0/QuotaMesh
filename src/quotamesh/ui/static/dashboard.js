@@ -243,7 +243,9 @@ $('#test-form').onsubmit = async event => {
       headers: {'Content-Type': 'application/json'}, body: JSON.stringify({model: 'qm/'+currentSlug, messages: [{role: 'user', content: form.elements.prompt.value}], stream: form.elements.stream.checked})});
     $('#test-summary').textContent = `HTTP ${response.status} · ${response.headers.get('X-QuotaMesh-Attempts') || '0'} upstream attempt(s) · ${response.headers.get('X-QuotaMesh-Provider') || 'no provider'} · fallback ${response.headers.get('X-QuotaMesh-Fallback') || 'false'}`;
     if (!response.headers.get('content-type')?.includes('text/event-stream')) {
-      const body = await response.json(); $('#test-output').textContent = body.choices?.[0]?.message?.content || JSON.stringify(body, null, 2);
+      const text = await response.text();
+      try { const body = JSON.parse(text); $('#test-output').textContent = body?.choices?.[0]?.message?.content || JSON.stringify(body, null, 2); }
+      catch { $('#test-output').textContent = text || 'Empty upstream response.'; }
     } else {
       const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = '';
       while (true) {
