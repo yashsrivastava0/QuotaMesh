@@ -1,0 +1,44 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "quotamesh"
+version = "0.1.0a1"
+description = "Local AI API capacity gateway"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "httpx>=0.27,<1",
+  "jinja2>=3.1,<4",
+  "python-multipart>=0.0.18,<1",
+  "typer>=0.15,<1",
+  "rich>=13.9,<15",
+  "uvicorn>=0.34,<1",
+]
+
+[project.urls]
+Homepage = "https://github.com/yashsrivastava0/QuotaMesh"
+Repository = "https://github.com/yashsrivastava0/QuotaMesh"
+Issues = "https://github.com/yashsrivastava0/QuotaMesh/issues"
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10", "pytest-asyncio>=0.25,<2", "ruff>=0.11,<1"]
+
+[project.scripts]
+quotamesh = "quotamesh.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/quotamesh"]
+
+[tool.hatch.build.targets.sdist]
+exclude = ["/QuotaMesh_MVP_Architecture_Product_Spec_v0.3.pdf", "/.codex", "/.DS_Store"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

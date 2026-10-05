@@ -1,0 +1,10 @@
+# Stable connection metadata only. Do not use this as quota or pricing truth.
+[providers.openai]
+name = "OpenAI"
+base_url = "https://api.openai.com/v1"
+last_verified = "2026-10-02"
+
+[providers.custom]
+name = "Custom OpenAI-compatible"
+base_url = ""
+last_verified = "2026-10-02"
