@@ -31,7 +31,17 @@ def snapshot(store, now):
         if not active:
             continue
         ids = {k["id"] for k in all_keys}
-        observed = summarize([r for r in rows if r["credential_id"] in ids])
+        source_rows = [
+            r
+            for r in rows
+            if r["credential_id"] in ids and r["provider_id"] == active[0]["provider_id"]
+        ]
+        observed = summarize(source_rows)
+        today = summarize([r for r in source_rows if r["day"] == now.date().isoformat()])
+        models = [
+            {"model": model, "usage": summarize([r for r in source_rows if r["model"] == model])}
+            for model in sorted({r["model"] for r in source_rows})
+        ]
         plans = {k["plan_type"] for k in active}
         bucket = (
             "PAID"
@@ -71,7 +81,7 @@ def snapshot(store, now):
             expires = key["trial_expires_at"]
             key["expired"] = bool(expires and datetime.fromisoformat(expires) <= now)
             key["secret_available"] = not key["env_name"] or bool(os.environ.get(key["env_name"]))
-            key["usage"] = summarize([r for r in rows if r["credential_id"] == key["id"]])
+            key["usage"] = summarize([r for r in source_rows if r["credential_id"] == key["id"]])
         current_states = [
             s
             | {
@@ -91,6 +101,8 @@ def snapshot(store, now):
                 "allocated_profiles": allocated,
                 "quota_states": current_states,
                 "usage": observed,
+                "today": today,
+                "models": models,
                 "starting_credit_usd": starting,
                 "conflicting_credit": len(credits) > 1,
                 "estimated_remaining_usd": remaining,

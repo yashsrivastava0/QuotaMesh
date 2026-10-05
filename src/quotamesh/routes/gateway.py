@@ -184,6 +184,7 @@ async def chat_completions(request: Request) -> Response:
         if remaining <= 0:
             return api_error(504, "Route attempt deadline exceeded", "deadline_exceeded")
         connection = credentials[selected["credential_id"]]
+        selected["credential_revision"] = connection["fingerprint"]
         secret = connection["secret_value"] or os.environ.get(connection["env_name"] or "", "")
         count += 1
         attempted.add((selected["credential_id"], selected["model"]))

@@ -422,3 +422,105 @@ async def test_credential_patch_validation_never_echoes_inputs(tmp_path, payload
         response = await client.patch("/api/credentials/1", headers=auth, json=payload)
         assert response.status_code in {400, 409}
         assert "sensitive-value" not in response.text
+
+
+async def test_minimal_add_needs_no_model_or_label_and_does_not_enable_paid(tmp_path):
+    app = create_app(tmp_path, allow_test_host=True)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        auth = {"Authorization": "Bearer " + app.state.local_key}
+        response = await client.post(
+            "/api/credentials",
+            headers=auth,
+            json={"provider_id": "openai", "plan_type": "PAID", "secret_value": "fake-key"},
+        )
+        assert response.status_code == 201
+        credential = app.state.store.safe_routing(datetime.now(UTC))["credentials"][0]
+        assert credential["label"] and credential["plan_type"] == "PAID"
+        assert "secret_value" not in credential
+        assert (
+            await client.post(
+                "/api/policy",
+                headers=auth,
+                json={"targets": [{"provider_id": "openai", "model": "test"}]},
+            )
+        ).status_code == 200
+        assert (await call(client, auth)).status_code == 403
+
+
+async def test_cost_sources_remain_truthful_after_pruning_and_credential_delete(tmp_path):
+    app, client, auth = await setup(
+        tmp_path, ok, keys=[{"quota_group": "shared"}, {"quota_group": "shared"}]
+    )
+    async with client:
+        initial = (await client.get("/api/wallet", headers=auth)).json()["buckets"]["FREE"][0]
+        assert (
+            initial["usage"]["provider_cost_count"] == 0
+            and initial["usage"]["sources"]["provider_cost_usd"] == "UNKNOWN"
+        )
+        await call(client, auth)
+        app.state.store.prune_history(datetime.now(UTC) + timedelta(days=31))
+        assert (await client.delete("/api/credentials/1", headers=auth)).status_code == 200
+        card = (await client.get("/api/wallet", headers=auth)).json()["buckets"]["FREE"][0]
+        assert (
+            card["usage"]["provider_cost_usd"] == 0.6 and card["usage"]["provider_cost_count"] == 1
+        )
+        assert card["usage"]["sources"]["provider_cost_usd"] == "PROVIDER"
+        assert card["today"]["routed_requests"] == 1 and len(card["models"]) == 1
+        assert len(card["keys"]) == 1 and not app.state.store.activity()["requests"]
+
+
+async def test_late_old_secret_failure_cannot_invalidate_rotated_key(tmp_path):
+    holder = {}
+    calls = []
+
+    def handler(request):
+        calls.append(request.headers["authorization"])
+        if len(calls) == 1:
+            holder["app"].state.store.edit_credential(1, {"secret_value": "fake-new-key"})
+            return httpx.Response(401, json={"error": {"message": "old key rejected"}})
+        return ok(request)
+
+    app, client, auth = await setup(tmp_path, handler, keys=[{}])
+    holder["app"] = app
+    async with client:
+        assert (await call(client, auth)).status_code == 401
+        assert (
+            app.state.store.safe_routing(datetime.now(UTC))["credentials"][0]["status"] == "ACTIVE"
+        )
+        assert (await call(client, auth)).status_code == 200
+        assert calls == ["Bearer fake-1", "Bearer fake-new-key"]
+
+
+async def test_profile_deleted_during_attempt_does_not_route_fallback_elsewhere(tmp_path):
+    holder, calls = {}, []
+
+    def handler(req):
+        calls.append(req)
+        holder["app"].state.store.delete_profile("transient")
+        return httpx.Response(429, json={"error": {"message": "rate limit"}})
+
+    app, client, auth = await setup(tmp_path, handler)
+    holder["app"] = app
+    async with client:
+        identifier = (await profile(client, auth, "transient")).json()["profile_id"]
+        assert (await call(client, auth, model="qm/transient")).status_code == 429
+        assert len(calls) == 1
+        assert app.state.store.usage_rows()[0]["profile_id"] == identifier
+        assert (await call(client, auth, model="qm/transient")).status_code == 404
+
+
+async def test_implausible_cost_stays_unknown_without_breaking_wallet_or_caps(tmp_path):
+    app, client, auth = await setup(
+        tmp_path,
+        lambda _: httpx.Response(200, json={"choices": [], "usage": {"cost_usd": 1e308}}),
+        keys=[{"plan_type": "PAID"}],
+        targets=[TARGET],
+        policy={"allow_paid": True, "paid_daily_cap_usd": 1},
+    )
+    async with client:
+        assert (await call(client, auth)).status_code == 200
+        assert (await client.get("/api/wallet", headers=auth)).status_code == 200
+        assert summarize(app.state.store.usage_rows())["unknown_cost"] == 1
+        assert (await call(client, auth)).status_code == 503

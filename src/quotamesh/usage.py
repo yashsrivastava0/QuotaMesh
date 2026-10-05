@@ -15,6 +15,8 @@ def summarize(rows):
         "provider_cost_usd": 0,
         "estimated_cost_usd": 0,
         "unknown_cost": 0,
+        "provider_cost_count": 0,
+        "estimated_cost_count": 0,
         "last_success_at": None,
         "last_error_at": None,
         "last_error_class": None,
@@ -33,6 +35,8 @@ def summarize(rows):
             "provider_cost_usd",
             "estimated_cost_usd",
             "unknown_cost",
+            "provider_cost_count",
+            "estimated_cost_count",
         ):
             result[name] += row[name]
         for key in ("last_success_at", "last_error_at"):
@@ -55,8 +59,8 @@ def summarize(rows):
         "tokens": "PROVIDER"
         if result["input_tokens"] is not None or result["output_tokens"] is not None
         else "UNKNOWN",
-        "provider_cost_usd": "PROVIDER",
-        "estimated_cost_usd": "LOCAL",
+        "provider_cost_usd": "PROVIDER" if result["provider_cost_count"] else "UNKNOWN",
+        "estimated_cost_usd": "LOCAL" if result["estimated_cost_count"] else "UNKNOWN",
         "unknown_cost": "UNKNOWN",
         "timestamps": "LOCAL",
     }
@@ -85,6 +89,8 @@ def record_rollup(conn, values):
         "provider_cost_usd",
         "estimated_cost_usd",
         "unknown_cost",
+        "provider_cost_count",
+        "estimated_cost_count",
         "last_success_at",
         "last_error_at",
         "last_error_class",
@@ -108,13 +114,15 @@ def record_rollup(conn, values):
         cost or 0,
         estimated or 0,
         int(cost is None and estimated is None),
+        int(cost is not None),
+        int(estimated is not None),
         now if ok else None,
         None if ok else now,
         values.get("error_class"),
         now,
         values.get("latency_ms"),
     ]
-    sums = columns[6:16]
+    sums = columns[6:18]
     updates = [f"{name}={name}+excluded.{name}" for name in sums]
     updates += [
         (
@@ -141,6 +149,6 @@ def record_rollup(conn, values):
     conn.execute(
         f"INSERT INTO usage_rollups({','.join(columns)}) "
         f"VALUES({','.join('?' for _ in columns)}) ON CONFLICT "
-        f"(day,profile_id,credential_id,model,plan_type) DO UPDATE SET {','.join(updates)}",
+        f"(day,profile_id,credential_id,provider_id,model,plan_type) DO UPDATE SET {','.join(updates)}",
         data,
     )

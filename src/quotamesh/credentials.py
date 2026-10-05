@@ -45,9 +45,11 @@ class CredentialPatch(BaseModel):
 
     def validated(self, existing=None):
         values = self.model_dump(exclude_unset=True)
-        for name in ("provider_id", "label", "plan_type", "priority", "base_url", "enabled"):
+        for name in ("provider_id", "plan_type", "priority", "base_url", "enabled"):
             if name in values and values[name] is None:
                 raise ValueError("Required fields cannot be cleared")
+        if "label" in values and values["label"] is None and existing is not None:
+            raise ValueError("Label cannot be cleared")
         secret, env = values.get("secret_value"), values.get("env_name")
         if ("secret_value" in values or "env_name" in values) and bool(secret) == bool(env):
             raise ValueError("Supply exactly one secret or environment reference when rotating")
@@ -65,7 +67,7 @@ class CredentialPatch(BaseModel):
 
 class CredentialCreate(CredentialPatch):
     provider_id: str
-    label: Text
+    label: Text | None = None
     plan_type: Literal["FREE", "TRIAL_CREDIT", "PAID", "UNKNOWN"]
     # Legacy Phase 1/2 clients supplied target fields when creating a key. They are
     # accepted for compatibility, but profile targets own model and price policy.
@@ -78,6 +80,7 @@ class CredentialCreate(CredentialPatch):
         values = super().validated(existing)
         if bool(values.get("secret_value")) == bool(values.get("env_name")):
             raise ValueError("Supply exactly one secret or environment reference")
+        values["label"] = values.get("label") or registry()[values["provider_id"]].name
         values.setdefault("secret_value", None)
         values.setdefault("env_name", None)
         return values

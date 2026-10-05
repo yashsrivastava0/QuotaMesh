@@ -3,6 +3,9 @@ const $ = (selector) => document.querySelector(selector);
 let state = JSON.parse($('#initial-state').textContent);
 const providers = JSON.parse($('#provider-options').textContent);
 let controller = null;
+let currentSlug = 'default';
+let creatingProfile = false;
+let historyCursor = null;
 const reasons = {
   no_credentials: 'No credential matches this target provider',
   disabled: 'Disabled by you or the route', expired: 'Expiry date has passed', invalid: 'Key rejected — replace or rotate it',
@@ -22,9 +25,9 @@ function notice(message, failed = false) {
   $('#notice').textContent = message; $('#notice').hidden = false;
   $('#notice').classList.toggle('success', !failed);
 }
-async function api(path, body) {
+async function api(path, body, method = 'POST') {
   const response = await fetch(path, body === undefined ? {} : {
-    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
+    method, headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
   });
   const result = await response.json();
   if (!response.ok) throw new Error(result.error?.message || 'Request failed');
@@ -95,6 +98,24 @@ function renderCredentials() {
     card.append(node('strong', credential.label), node('p', `${credential.provider_id} · ${credential.plan_type} · ${credential.enabled ? credential.status : 'DISABLED'}`));
     card.append(node('small', `Group: ${credential.quota_group || (credential.provider_id === 'groq' ? 'individual key' : 'provider default')} · priority ${credential.priority}${credential.trial_expires_at ? ' · expiry '+credential.trial_expires_at.slice(0,10) : ''}`));
     const actions = node('div', undefined, 'actions');
+    const edit = node('button', 'Edit / rotate', 'compact secondary'); edit.type = 'button';
+    edit.onclick = () => {
+      const form = $('#credential-form'); form.reset();
+      form.elements.credential_id.value = credential.id;
+      for (const control of form.elements) {
+        if (!control.name || ['secret_value','credential_id'].includes(control.name)) continue;
+        control.value = control.name === 'trial_expires_at' ? (credential[control.name] || '').slice(0,10) : credential[control.name] ?? '';
+      }
+      // Rotation is explicit: never resubmit the current environment reference as a secret edit.
+      form.elements.env_name.value = '';
+      $('#credential-editor-title').textContent = 'Edit '+credential.label+' — leave secret fields blank to keep access';
+      $('#cancel-edit').hidden = false; form.closest('details').open = true; form.scrollIntoView({behavior:'smooth',block:'center'});
+    }; actions.append(edit);
+    const remove = node('button', 'Delete', 'compact danger secondary'); remove.type = 'button';
+    remove.onclick = async () => {
+      if (remove.dataset.confirm !== 'yes') { remove.dataset.confirm = 'yes'; remove.textContent = 'Confirm deletion'; return; }
+      try { await api(`/api/credentials/${credential.id}`, {}, 'DELETE'); await refresh(); notice('Secret deleted. Historical usage retained.'); } catch (error) { notice(error.message, true); }
+    }; actions.append(remove);
     for (const [action, label] of [[credential.enabled ? 'disable' : 'enable', credential.enabled ? 'Disable' : 'Enable'], ['reset', 'Reset shared state']]) {
       const button = node('button', label, 'compact secondary'); button.type = 'button';
       button.onclick = async () => { try { await api(`/api/credentials/${credential.id}/action`, {action}); await refresh(); notice(action === 'reset' ? 'Credential state and its shared quota group reset. This does not restore provider quota.' : 'Credential updated.'); } catch (error) { notice(error.message, true); } };
@@ -138,12 +159,26 @@ function renderAttempts(attempts) {
   }
 }
 async function refresh(editPolicy = false) {
-  const status = await api('/api/status'); state = status.routing;
+  const [status, wallet] = await Promise.all([api('/api/status?profile='+encodeURIComponent(currentSlug)), api('/api/wallet')]); state = status.routing;
+  renderWallet(wallet);
+  const profileSelect = $('#profile-select'); profileSelect.replaceChildren();
+  for (const profile of wallet.profiles) { const option = node('option', profile.name+' · qm/'+profile.slug+(profile.enabled ? '' : ' · disabled')); option.value = profile.slug; profileSelect.append(option); }
+  profileSelect.value = currentSlug;
+  $('#delete-profile').dataset.confirm = ''; $('#delete-profile').textContent = 'Delete profile';
+  $('#profile-alias').textContent = creatingProfile ? 'UNSAVED PROFILE' : 'qm/'+currentSlug;
+  $('#delete-profile').hidden = currentSlug === 'default' || creatingProfile;
+  await loadHistory();
   renderCredentials(); renderDecisions(status.decisions); renderAttempts(status.recent_attempts);
   $('#metric-keys').textContent = state.credentials.length;
   $('#metric-spend').textContent = '$'+state.usage.daily.toFixed(4);
-  $('#spend-note').textContent = `Paid spend: $${state.usage.daily.toFixed(4)} today / $${state.usage.monthly.toFixed(4)} this UTC month. `+(state.usage.unknown ? 'Some costs are unknown; totals are incomplete. ' : '')+(status.diagnostic_write_failures ? `Metadata write failures: ${status.diagnostic_write_failures}. ` : '')+'Only gateway traffic is visible.';
-  if (editPolicy) fillPolicy();
+  $('#spend-note').textContent = `qm/${currentSlug}: ${status.observed_today.routed_requests} routed request(s), ${status.observed_today.attempts} upstream attempt(s) today [LOCAL]. Paid spend: $${state.usage.daily.toFixed(4)} today / $${state.usage.monthly.toFixed(4)} this UTC month. `+(state.usage.unknown ? 'Some costs are unknown; totals are incomplete. ' : '')+(status.diagnostic_write_failures ? `Metadata write failures: ${status.diagnostic_write_failures}. ` : '')+'Only gateway traffic is visible.';
+  if (editPolicy) {
+    fillPolicy();
+    $('#profile-name').value = state.profile?.name || 'Default';
+    $('#profile-slug').value = currentSlug;
+    $('#profile-slug').readOnly = true;
+    $('#profile-template').value = 'advanced';
+  }
   // New credentials must become selectable without discarding unsaved target edits.
   for (const row of $('#targets').children) {
     const provider = row.querySelector('[data-field="provider_id"]').value;
@@ -154,13 +189,25 @@ async function refresh(editPolicy = false) {
     }
     pool.value = selected;
   }
+  $('#connection-alias').textContent = 'qm/'+currentSlug;
 }
 $('#add-target').onclick = () => targetRow();
 $('#refresh').onclick = () => refresh().catch(error => notice(error.message, true));
+$('#cancel-edit').onclick = () => {
+  $('#credential-form').reset(); $('#credential-form').elements.credential_id.value = '';
+  $('#credential-editor-title').textContent = 'Add API access'; $('#cancel-edit').hidden = true;
+};
 $('#credential-form').onsubmit = async event => {
   event.preventDefault(); const form = event.currentTarget;
-  const values = Object.fromEntries(new FormData(form)); values.model = 'configured-in-route';
-  try { await api('/api/credentials', values); form.reset(); await refresh(); notice('Credential saved as untested. Choose it in a target and save your route.'); } catch (error) { notice(error.message, true); }
+  const values = Object.fromEntries(new FormData(form)); const identifier = values.credential_id; delete values.credential_id;
+  values.priority = Number(values.priority || 0); values.starting_credit_usd = numberOrNull(values.starting_credit_usd);
+  for (const name of ['quota_group','account_label','trial_expires_at']) values[name] = values[name] || null;
+  for (const name of ['secret_value','env_name']) if (!values[name]) delete values[name];
+  try {
+    await api(identifier ? '/api/credentials/'+identifier : '/api/credentials', values, identifier ? 'PATCH' : 'POST');
+    $('#cancel-edit').click(); await refresh();
+    notice(identifier ? 'Credential updated. Secret rotation keeps shared cooldowns and usage.' : 'Credential saved as untested. Choose it in a target and save your profile.');
+  } catch (error) { notice(error.message, true); }
 };
 $('#policy-form').onsubmit = async event => {
   event.preventDefault(); const form = event.currentTarget; const values = {};
@@ -174,10 +221,16 @@ $('#policy-form').onsubmit = async event => {
       target[key] = ['credential_id','input_price','output_price'].includes(key) ? numberOrNull(control.value) : control.value;
     } return target;
   });
-  try { await api('/api/policy', values); await refresh(); notice('Route rules saved. The dry run now shows the active policy.'); } catch (error) { notice(error.message, true); }
+  const slug = $('#profile-slug').value; const name = $('#profile-name').value;
+  if (!slug || !name.trim()) { notice('Enter a profile name and a lowercase slug.', true); return; }
+  values.slug = slug; values.name = name;
+  try {
+    await api(creatingProfile ? '/api/profiles' : '/api/profiles/'+currentSlug, values, creatingProfile ? 'POST' : 'PUT');
+    currentSlug = slug; creatingProfile = false; await refresh(true); notice('Profile saved. The dry run shows the active policy.');
+  } catch (error) { notice(error.message, true); }
 };
 if ($('#demo-form')) $('#demo-form').onsubmit = async event => {
-  event.preventDefault(); try { await api('/api/demo', Object.fromEntries(new FormData(event.currentTarget))); await refresh(true); $('#test-output').textContent = 'Scenario loaded. Send a request to observe it.'; $('#test-summary').textContent = 'No test sent in this scenario yet.'; notice('Demo reset. Use stream mode for the streaming scenarios.'); } catch (error) { notice(error.message, true); }
+  event.preventDefault(); try { await api('/api/demo', Object.fromEntries(new FormData(event.currentTarget))); currentSlug = 'default'; creatingProfile = false; await refresh(true); $('#test-output').textContent = 'Scenario loaded. Send a request to observe it.'; $('#test-summary').textContent = 'No test sent in this scenario yet.'; notice('Demo reset. Use stream mode for the streaming scenarios.'); } catch (error) { notice(error.message, true); }
 };
 $('#cancel-test').onclick = () => controller?.abort();
 $('#test-form').onsubmit = async event => {
@@ -187,7 +240,7 @@ $('#test-form').onsubmit = async event => {
   $('#test-output').textContent = ''; $('#test-summary').textContent = 'Routing request…';
   try {
     const response = await fetch('/api/test', {method: 'POST', signal: controller.signal,
-      headers: {'Content-Type': 'application/json'}, body: JSON.stringify({model: 'qm/default', messages: [{role: 'user', content: form.elements.prompt.value}], stream: form.elements.stream.checked})});
+      headers: {'Content-Type': 'application/json'}, body: JSON.stringify({model: 'qm/'+currentSlug, messages: [{role: 'user', content: form.elements.prompt.value}], stream: form.elements.stream.checked})});
     $('#test-summary').textContent = `HTTP ${response.status} · ${response.headers.get('X-QuotaMesh-Attempts') || '0'} upstream attempt(s) · ${response.headers.get('X-QuotaMesh-Provider') || 'no provider'} · fallback ${response.headers.get('X-QuotaMesh-Fallback') || 'false'}`;
     if (!response.headers.get('content-type')?.includes('text/event-stream')) {
       const body = await response.json(); $('#test-output').textContent = body.choices?.[0]?.message?.content || JSON.stringify(body, null, 2);
@@ -206,7 +259,112 @@ $('#test-form').onsubmit = async event => {
       }
     }
   } catch (error) { $('#test-summary').textContent = error.name === 'AbortError' ? 'Request stopped. Upstream cancellation recorded when detected.' : error.message; }
-  finally { controller = null; form.querySelector('[type="submit"]').disabled = false; $('#cancel-test').hidden = true; await refresh().catch(error => notice(error.message, true)); }
+  finally { controller = null; $('#cancel-test').hidden = true; await refresh().catch(error => notice(error.message, true)); form.querySelector('[type="submit"]').disabled = false; }
 };
 fillPolicy();
-refresh().catch(error => notice(error.message, true));
+refresh(true).catch(error => notice(error.message, true));
+
+function tagged(label, value, source) { return node('p', `${label}: ${value} [${source}]`, 'fine'); }
+function dollars(value) { return value == null ? 'Unknown' : '$'+value.toFixed(4); }
+function renderWallet(wallet) {
+  $('#wallet-summary').textContent = `${wallet.today.routed_requests} routed requests today · ${wallet.today.attempts} upstream attempts · ${wallet.today.failures} failed attempts [LOCAL / UTC]. Known observed cost ${dollars(wallet.today.known_cost_usd)}; ${wallet.today.unknown_cost} attempt(s) with unknown cost. Provider and local estimates are listed separately below.`;
+  $('#coverage-note').textContent = 'Coverage: '+wallet.coverage+'. Daily usage survives history pruning. Local paid caps can be exceeded by requests already in flight.';
+  $('#wallet-buckets').replaceChildren();
+  for (const [plan, title] of [['FREE','FREE'],['TRIAL_CREDIT','TRIAL / CREDITS'],['PAID','PAID / UNKNOWN']]) {
+    const section = node('section', undefined, 'wallet-bucket '+plan.toLowerCase());
+    section.append(node('h3', title));
+    if (!wallet.buckets[plan].length) section.append(node('p', 'No access configured in this group.', 'fine'));
+    for (const source of wallet.buckets[plan]) {
+      const card = node('article', undefined, 'capacity-source');
+      card.append(node('strong', source.provider_id+' / '+(source.keys[0].account_label || source.group.split(':').slice(1).join(':'))));
+      card.append(tagged('Access', `${source.keys.length} key(s)${source.shared ? ' · shared quota' : ''} · ${source.plan_types.join(', ')}`, 'MANUAL'));
+      card.append(tagged('Routed requests / attempts today', `${source.today.routed_requests} / ${source.today.attempts}`, 'LOCAL / UTC'));
+      card.append(tagged('Lifetime observed attempts', source.usage.attempts, 'LOCAL'));
+      card.append(tagged('Last success', source.usage.last_success_at || 'Not observed', 'LOCAL'));
+      card.append(tagged('Last error', source.usage.last_error_at ? `${source.usage.last_error_at} · ${source.usage.last_error_class}` : 'Not observed', 'LOCAL'));
+      card.append(tagged('Last attempt latency', source.usage.last_latency_ms == null ? 'Unknown' : source.usage.last_latency_ms+' ms', source.usage.last_latency_ms == null ? 'UNKNOWN' : 'LOCAL'));
+      card.append(tagged('Provider-reported USD', source.usage.provider_cost_count ? dollars(source.usage.provider_cost_usd) : 'Not reported', source.usage.sources.provider_cost_usd));
+      card.append(tagged('Locally estimated USD', source.usage.estimated_cost_count ? dollars(source.usage.estimated_cost_usd) : 'Not estimated', source.usage.sources.estimated_cost_usd));
+      card.append(tagged('Unknown costs', source.usage.unknown_cost+' attempt(s)', 'UNKNOWN'));
+      const partial = source.usage.input_missing || source.usage.output_missing;
+      card.append(tagged('Observed input / output tokens', `${source.usage.input_tokens ?? 'Unknown'} / ${source.usage.output_tokens ?? 'Unknown'}${partial ? ' · incomplete' : ''}`, source.usage.sources.tokens));
+      if (plan === 'TRIAL_CREDIT' || source.starting_credit_usd != null || source.conflicting_credit) {
+        card.append(tagged('Starting credit', source.conflicting_credit ? 'Conflicting amounts — edit keys to agree' : dollars(source.starting_credit_usd), source.starting_credit_usd == null ? 'UNKNOWN' : 'MANUAL'));
+        card.append(tagged('Estimated remaining USD', dollars(source.estimated_remaining_usd), source.sources.estimated_remaining_usd));
+      }
+      card.append(tagged('Remaining provider quota', 'Unknown', 'UNKNOWN'));
+      for (const key of source.keys) {
+        const observed = key.usage.last_success_at ? 'success observed' : 'untested';
+        card.append(tagged(key.label, `${key.enabled ? (key.expired ? 'EXPIRED' : key.status) : 'DISABLED'} · ${observed}${!key.secret_available ? ' · environment reference unavailable' : ''}`, 'LOCAL'));
+        if (key.trial_expires_at || key.plan_type === 'TRIAL_CREDIT') card.append(tagged('Expiry', key.trial_expires_at ? `${key.trial_expires_at.slice(0,10)} · ${key.expired ? 'expired' : Math.max(0, Math.ceil((Date.parse(key.trial_expires_at)-Date.now())/86400000))+' days left'}` : 'Unknown', key.trial_expires_at ? 'MANUAL' : 'UNKNOWN'));
+      }
+      for (const model of source.models) card.append(tagged(model.model, `${model.usage.attempts} attempt(s) · last success ${model.usage.last_success_at || 'unknown'}`, 'LOCAL'));
+      for (const status of source.quota_states) card.append(tagged(status.model, `${status.status}${status.active ? ' · active block' : ' · historical observation'}${status.until ? ' · retry/reset '+status.until : ''}`, 'LOCAL'));
+      card.append(tagged('Allocated profiles', source.allocated_profiles.map(p => p.slug+(p.enabled ? '' : ' (disabled)')).join(', ') || 'None', 'MANUAL'));
+      if (plan === 'PAID') card.append(node('p', 'Blocked unless the selected profile explicitly allows paid use.', 'fine'));
+      section.append(card);
+    }
+    $('#wallet-buckets').append(section);
+  }
+}
+async function loadHistory(append = false) {
+  const profile = $('#history-filter').value === 'selected' ? '&profile='+encodeURIComponent(currentSlug) : '';
+  const cursor = append && historyCursor ? '&before='+historyCursor : '';
+  const data = await api('/api/activity?limit=20'+profile+cursor);
+  if (!append) $('#request-history').replaceChildren();
+  if (!append && !data.requests.length) $('#request-history').append(node('p','No routed requests in this view yet.','fine'));
+  for (const request of data.requests) {
+    const details = node('details', undefined, 'request-trace');
+    details.append(node('summary', `${request.ts.slice(0,19)} UTC · qm/${request.profile_slug} · ${request.outcome} · ${request.attempt_count} attempt(s) · ${request.latency_ms} ms [LOCAL]`));
+    details.append(node('p', 'Request '+request.request_id, 'fine'));
+    for (const attempt of request.attempts) {
+      details.append(node('p', `#${attempt.attempt_idx} · ${attempt.credential_label} · ${attempt.provider_id} / ${attempt.model} · ${attempt.outcome} ${attempt.http_status ?? ''} · ${attempt.error_class || 'success'} · ${attempt.latency_ms ?? 'unknown'} ms [LOCAL]`, 'fine'));
+      details.append(tagged('Input / output tokens', `${attempt.input_tokens ?? 'Unknown'} / ${attempt.output_tokens ?? 'Unknown'}`, attempt.input_tokens == null && attempt.output_tokens == null ? 'UNKNOWN' : 'PROVIDER'));
+      const cost = attempt.provider_cost_usd ?? attempt.estimated_cost_usd;
+      details.append(tagged('Attempt cost', dollars(cost), cost == null ? 'UNKNOWN' : attempt.provider_cost_usd != null ? 'PROVIDER' : 'LOCAL'));
+      for (const skip of JSON.parse(attempt.skipped_json || '[]')) details.append(node('p', `Skipped ${skip.label} / ${skip.model}: ${reasons[skip.skip_reason] || skip.skip_reason}`, 'fine'));
+    }
+    $('#request-history').append(details);
+  }
+  historyCursor = data.next_before; $('#more-history').hidden = !historyCursor;
+}
+$('#more-history').onclick = () => loadHistory(true).catch(error => notice(error.message,true));
+$('#history-filter').onchange = () => loadHistory().catch(error => notice(error.message,true));
+$('#profile-select').onchange = async event => {
+  currentSlug = event.target.value; creatingProfile = false;
+  await refresh(true).catch(error => notice(error.message,true));
+};
+$('#new-profile').onclick = () => {
+  creatingProfile = true; $('#profile-name').value = ''; $('#profile-slug').value = ''; $('#profile-slug').readOnly = false;
+  $('#profile-alias').textContent = 'UNSAVED PROFILE'; $('#delete-profile').hidden = true;
+  $('#policy-form').elements.allow_paid.checked = false;
+  $('#policy-form').elements.allow_unknown_price.checked = false;
+  $('#policy-form').elements.enabled.checked = true;
+  notice('New profile starts with paid off. Enter a unique slug, choose your targets and save. The test panel uses the selected saved profile until then.');
+  $('#profile-name').focus();
+};
+$('#delete-profile').onclick = async event => {
+  const button = event.currentTarget;
+  if (button.dataset.confirm !== 'yes') { button.dataset.confirm = 'yes'; button.textContent = 'Confirm deletion'; return; }
+  try {
+    await api('/api/profiles/'+currentSlug, {}, 'DELETE'); currentSlug = 'default'; creatingProfile = false;
+    button.dataset.confirm = ''; button.textContent = 'Delete profile'; await refresh(true);
+    notice('Profile archived. Its slug and historical usage remain reserved.');
+  } catch (error) { notice(error.message,true); }
+};
+$('#profile-template').onchange = event => {
+  const mode = event.target.value; if (mode === 'advanced') return;
+  const form = $('#policy-form');
+  const rank = plan => plan === 'FREE' ? 0 : plan === 'TRIAL_CREDIT' ? 1 : 2;
+  let targets = [...$('#targets').children].map(row => Object.fromEntries([...row.querySelectorAll('[data-field]')].map(c => [c.dataset.field, ['credential_id','input_price','output_price'].includes(c.dataset.field) ? numberOrNull(c.value) : c.value])));
+  targets = targets.flatMap(target => {
+    const keys = state.credentials.filter(c => c.provider_id === target.provider_id && (target.credential_id == null || c.id === target.credential_id));
+    if (new Set(keys.map(k => k.plan_type)).size > 1) return keys.map(key => ({...target,credential_id:key.id,rank:rank(key.plan_type)}));
+    return [{...target,rank:keys.length ? rank(keys[0].plan_type) : 3}];
+  }).filter(t => mode === 'paid-backup' || t.rank <= (mode === 'free-only' ? 0 : 1)).sort((a,b) => a.rank-b.rank);
+  if (!targets.length || targets.length > 30) { notice('Template needs 1–30 matching targets. Add access or use advanced ordered mode.',true); event.target.value = 'advanced'; return; }
+  form.elements.allow_trial.checked = mode !== 'free-only'; form.elements.allow_paid.checked = mode === 'paid-backup';
+  if (mode === 'paid-backup') { if (!form.elements.paid_daily_cap_usd.value) form.elements.paid_daily_cap_usd.value = 2; if (!form.elements.paid_monthly_cap_usd.value) form.elements.paid_monthly_cap_usd.value = 15; }
+  $('#targets').replaceChildren(); for (const target of targets) targetRow(target);
+  notice('Template applied to this form. Inspect the explicit order and permissions, then save.');
+};

@@ -15,6 +15,7 @@ from rich.table import Table
 from quotamesh.app import create_app
 from quotamesh.config import data_directory
 from quotamesh.store import Store
+from quotamesh.wallet import snapshot
 
 app = typer.Typer(no_args_is_help=True, help="Your local AI API capacity gateway")
 console = Console()
@@ -41,35 +42,61 @@ def key() -> None:
 
 @app.command()
 def status() -> None:
-    """Show safe credential and default-policy summaries."""
-    routing = Store(data_directory()).safe_routing(datetime.now(UTC))
-    if not routing["credentials"]:
-        console.print("No credentials configured. Run `quotamesh start` or `quotamesh demo`.")
-        return
-    table = Table(title="QuotaMesh API access — local metadata only")
-    for title in ("Provider", "Label", "Plan", "State", "Quota group", "Expiry"):
+    """Show grouped capacity, observation sources, and each named project policy."""
+    store = Store(data_directory())
+    now = datetime.now(UTC)
+    wallet = snapshot(store, now)
+    table = Table(title="QuotaMesh capacity — local observations only")
+    for title in (
+        "Plan [MANUAL]",
+        "Source [MANUAL]",
+        "Keys [LOCAL]",
+        "Requests / attempts today [LOCAL]",
+        "Last success [LOCAL]",
+    ):
         table.add_column(title)
-    for credential in routing["credentials"]:
-        table.add_row(
-            credential["provider_id"],
-            credential["label"],
-            credential["plan_type"],
-            credential["status"] if credential["enabled"] else "DISABLED",
-            credential["quota_group"] or "provider default",
-            (credential["trial_expires_at"] or "not set")[:10],
-        )
+    for plan, groups in wallet["buckets"].items():
+        for group in groups:
+            table.add_row(
+                plan,
+                group["group"],
+                str(len(group["keys"])),
+                f"{group['today']['routed_requests']} / {group['today']['attempts']}",
+                group["usage"]["last_success_at"] or "not observed",
+            )
     console.print(table)
-    profile = routing["profile"]
-    if profile:
-        console.print(
-            f"qm/default: {len(routing['targets'])} ordered target(s), "
-            f"paid {'on' if profile['allow_paid'] else 'off'}, "
-            f"maximum {profile['max_attempts']} attempts"
+    if not any(wallet["buckets"].values()):
+        console.print("No credentials configured. Run `quotamesh start` or `quotamesh demo`.")
+    policies = Table(title="Project profiles — UTC paid caps")
+    for title in (
+        "Alias",
+        "Name",
+        "Enabled",
+        "Targets",
+        "Trial / paid",
+        "Daily / monthly cap",
+        "Paid today [LOCAL]",
+    ):
+        policies.add_column(title)
+    for profile in wallet["profiles"]:
+        routing = store.safe_routing(now, profile["slug"])
+        caps = " / ".join(
+            "none" if profile[field] is None else f"${profile[field]:.4f}"
+            for field in ("paid_daily_cap_usd", "paid_monthly_cap_usd")
         )
-        console.print(
-            f"Observed paid spend today: ${routing['usage']['daily']:.4f} (UTC). "
-            "Only traffic through QuotaMesh is counted."
+        policies.add_row(
+            "qm/" + profile["slug"],
+            profile["name"],
+            "yes" if profile["enabled"] else "no",
+            str(len(routing["targets"])),
+            f"{'on' if profile['allow_trial'] else 'off'} / {'on' if profile['allow_paid'] else 'off'}",
+            caps,
+            f"${routing['usage']['daily']:.4f}"
+            + (" + unknown" if routing["usage"]["unknown_daily"] else ""),
         )
+    console.print(policies)
+    console.print(wallet["limitations"], markup=False)
+    console.print("Usage coverage: " + wallet["coverage"], markup=False)
 
 
 @app.command("fake-upstream")
@@ -88,7 +115,7 @@ def demo(port: int = typer.Option(8788, min=1, max=65535), browser: bool = True)
         server = create_app(Path(directory))
         server.state.demo_mode = True
         server.state.demo_base_url = f"http://127.0.0.1:{port}/demo-upstream/v1"
-        configure_demo(server, server.state.demo_base_url)
+        configure_demo(server, server.state.demo_base_url, "wallet")
         server.mount("/demo-upstream", fake_app)
         url = f"http://127.0.0.1:{port}/bootstrap?token={server.state.bootstrap_token}"
         console.print("QuotaMesh demo: temporary data, simulated dollars, no provider keys.")

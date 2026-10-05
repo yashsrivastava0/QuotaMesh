@@ -21,6 +21,7 @@ from quotamesh.security import (
     browser_authorized,
     management_authorized,
 )
+from quotamesh.usage import summarize
 
 router = APIRouter()
 UI = Path(__file__).parents[1] / "ui"
@@ -170,6 +171,14 @@ def api_status(request: Request, profile: str = "default") -> Response:
             "connection": store.connection_summary(),
             "recent_attempts": store.recent_attempts(),
             "diagnostic_write_failures": request.app.state.diagnostic_write_failures,
+            "observed_today": summarize(
+                store.usage_rows(
+                    profile_id=(
+                        store.safe_routing(datetime.now(UTC), profile)["profile"] or {}
+                    ).get("id", -1),
+                    day=datetime.now(UTC).date().isoformat(),
+                )
+            ),
         }
     )
 
@@ -242,13 +251,23 @@ async def credential_action(identifier: int, request: Request):
     try:
         action = CredentialAction.model_validate(await request.json()).action
         store = request.app.state.store
-        if not any(
-            c["id"] == identifier for c in store.safe_routing(datetime.now(UTC))["credentials"]
-        ):
+        credential = next(
+            (
+                c
+                for c in store.safe_routing(datetime.now(UTC))["credentials"]
+                if c["id"] == identifier
+            ),
+            None,
+        )
+        if credential is None:
             return api_error(404, "Credential not found", "credential_not_found")
         if action == "reset":
             store.reset_credential(identifier)
-            request.app.state.degraded.clear()
+            request.app.state.degraded = {
+                key: until
+                for key, until in request.app.state.degraded.items()
+                if key[0] != credential["provider_id"] or (len(key) == 3 and key[2] != identifier)
+            }
         else:
             with store.connection() as conn:
                 conn.execute(

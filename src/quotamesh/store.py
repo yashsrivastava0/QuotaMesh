@@ -138,9 +138,10 @@ class Store:
                       input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL,
                       input_missing INTEGER NOT NULL, output_missing INTEGER NOT NULL,
                       provider_cost_usd REAL NOT NULL, estimated_cost_usd REAL NOT NULL,
+                      provider_cost_count INTEGER NOT NULL, estimated_cost_count INTEGER NOT NULL,
                       unknown_cost INTEGER NOT NULL, last_success_at TEXT, last_error_at TEXT,
                       last_error_class TEXT, last_seen_at TEXT NOT NULL, last_latency_ms INTEGER,
-                      PRIMARY KEY(day,profile_id,credential_id,model,plan_type)
+                      PRIMARY KEY(day,profile_id,credential_id,provider_id,model,plan_type)
                     );
                     CREATE INDEX attempts_request ON attempts(request_id,id);
                     CREATE INDEX usage_credential ON usage_rollups(credential_id,day);
@@ -442,8 +443,16 @@ class Store:
         if outcome.scope == "credential":
             with self.connection() as conn:
                 conn.execute(
-                    "UPDATE credentials SET status=?,status_reason=?,updated_at=? WHERE id=?",
-                    (outcome.state, outcome.kind, now.isoformat(), decision["credential_id"]),
+                    "UPDATE credentials SET status=?,status_reason=?,updated_at=? WHERE id=? "
+                    "AND (fingerprint=? OR ? IS NULL)",
+                    (
+                        outcome.state,
+                        outcome.kind,
+                        now.isoformat(),
+                        decision["credential_id"],
+                        decision.get("credential_revision"),
+                        decision.get("credential_revision"),
+                    ),
                 )
         elif outcome.scope == "quota" or outcome.kind == "ok":
             with self.connection() as conn:

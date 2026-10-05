@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import UTC, datetime, timedelta
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -101,6 +102,7 @@ async def chat(request: Request):
 
 
 SCENARIOS = {
+    "wallet": ("Mixed wallet + named profiles", "fake-429-short", "fake-200", False, False),
     "fallback": ("Rate limit → free backup", "fake-429-short", "fake-200", False, False),
     "paid-guard": (
         "Both free sources fail → paid blocked",
@@ -136,6 +138,8 @@ def configure_demo(server, base_url, scenario="fallback"):
     # Only the CLI's isolated temporary demo can call this function.
     with store.connection() as conn:
         conn.execute("DELETE FROM profile_targets")
+        conn.execute("DELETE FROM project_profiles")
+        conn.execute("DELETE FROM usage_rollups")
         conn.execute("DELETE FROM credentials")
         conn.execute("DELETE FROM quota_state")
         conn.execute("DELETE FROM daily_usage")
@@ -194,3 +198,48 @@ def configure_demo(server, base_url, scenario="fallback"):
             },
         ],
     )
+
+    if scenario == "wallet":
+        for label in ("Hackathon trial", "Hackathon second key — shared credit"):
+            store.add_credential(
+                provider_id="custom",
+                label=label,
+                plan_type="TRIAL_CREDIT",
+                base_url=base_url,
+                secret_value="fake-paid",
+                env_name=None,
+                quota_group="hackathon",
+                account_label="Hackathon project",
+                starting_credit_usd=20,
+                trial_expires_at=(datetime.now(UTC) + timedelta(days=19)).isoformat(),
+            )
+        from quotamesh.policy import Policy
+
+        base = Policy(
+            targets=[{"provider_id": "custom", "model": "fake-free", "credential_id": 2}]
+        ).model_dump()
+        free_targets = base.pop("targets")
+        store.save_profile(
+            "free-app", base | {"allow_trial": False}, free_targets, name="Free app", create=True
+        )
+        trial_target = {
+            "provider_id": "custom",
+            "model": "fake-trial",
+            "credential_id": 4,
+            "input_price": 1,
+            "output_price": 1,
+        }
+        paid_target = {
+            "provider_id": "custom",
+            "model": "fake-paid",
+            "credential_id": 3,
+            "input_price": 1,
+            "output_price": 1,
+        }
+        store.save_profile(
+            "paid-backup",
+            base | {"allow_paid": True, "paid_daily_cap_usd": 1, "paid_monthly_cap_usd": 10},
+            [trial_target, paid_target],
+            name="Trial with paid backup",
+            create=True,
+        )
