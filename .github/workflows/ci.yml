@@ -47,10 +47,15 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - run: python -m pip install -e . playwright
+      - run: python -m pip install -e '.[browser]'
       - run: playwright install --with-deps chromium
-      - run: node --check src/quotamesh/ui/static/dashboard.js
-      - run: python scripts/browser_smoke.py
+      - run: python scripts/check_javascript.py
+      - run: python scripts/browser_smoke.py --screenshots output/frontend-browser
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: frontend-browser-evidence
+          path: output/frontend-browser
 
   clients:
     name: Installed wheel and generated clients

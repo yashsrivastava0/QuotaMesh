@@ -40,6 +40,12 @@ redirects to a clean URL. The default port is 8787.
 
 In the dashboard:
 
+Use the separate **Overview**, **API access**, **Profiles**, **Route & test**,
+**Connect**, and **Activity** pages. **How QuotaMesh works** explains the process
+and links to Doctor and the dated catalog. The selected saved profile follows
+navigation; unsaved access/profile edits offer Save, Discard, or Stay.
+See [features, user stories, journeys, and synthetic acceptance data](docs/frontend-experience.md).
+
 1. **Add API access.** Choose a provider, plan, and either a secret or an environment
    reference. Label is optional; custom endpoints also need a base URL. No model is
    needed to save a credential. **Save as untested** makes no provider call; **Save and test
@@ -295,15 +301,18 @@ requests that make no upstream call are excluded from these observation counts.
 An optional real-browser check uses Playwright Chromium:
 
 ```sh
-.venv/bin/python -m pip install playwright
+.venv/bin/python -m pip install -e '.[browser]'
 .venv/bin/playwright install chromium
-.venv/bin/python scripts/browser_smoke.py
+.venv/bin/python scripts/check_javascript.py
+.venv/bin/python scripts/browser_smoke.py --screenshots output/frontend-browser
 ```
 
 Set `CHROMIUM_PATH=/path/to/chromium` to use a system browser instead. The smoke script launches and stops its
-own isolated demo, checks the mixed wallet, profile CRUD, credential editing/rotation,
-streaming/credit/history, all six failure scenarios, Doctor, snippets/copy fallback,
-paid-generation blocking, rapid profile switches, draft preservation, and responsive layouts.
+own isolated demo, checks all nine pages, first-run setup, profile and credential CRUD,
+twelve routing/streaming scenarios, Doctor, paid-generation blocking, draft navigation,
+partial failures/retries, session expiry, and responsive layouts. The report and
+screenshots are written to the chosen output directory. See the
+[acceptance guide](docs/frontend-experience.md) for all sixteen demo datasets.
 Playwright is a verification tool, not an application dependency.
 
 Record the synthetic product walkthrough with `python scripts/record_demo.py`.
