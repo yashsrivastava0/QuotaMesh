@@ -18,6 +18,25 @@ def utc_now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+class DuplicateCredential(ValueError):
+    """A sanitized management conflict, never containing secret material."""
+
+
+def reject_duplicate(conn, provider, base_url, secret, env, exclude=0):
+    effective = secret or os.environ.get(env or "")
+    for row in conn.execute(
+        "SELECT c.id,s.secret_value,s.env_name FROM credentials c JOIN secrets s "
+        "ON c.id=s.credential_id WHERE c.deleted_at IS NULL AND c.provider_id=? "
+        "AND c.base_url=? AND c.id!=?",
+        (provider, base_url, exclude),
+    ):
+        other = row["secret_value"] or os.environ.get(row["env_name"] or "")
+        if (env and env == row["env_name"]) or (effective and effective == other):
+            raise DuplicateCredential(
+                "This API access is already configured; edit the existing credential."
+            )
+
+
 class Store:
     def __init__(self, data_dir: Path):
         self.data_dir = data_dir
@@ -47,7 +66,7 @@ class Store:
         with self.connection() as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             version = conn.execute("PRAGMA user_version").fetchone()[0]
-            if version > 4:
+            if version > 5:
                 raise RuntimeError(f"Database schema {version} is newer than this QuotaMesh build")
             if version == 0:
                 conn.executescript(
@@ -178,6 +197,19 @@ class Store:
                     request_id TEXT, PRIMARY KEY(credential_id,mode)
                 )""")
                 conn.execute("PRAGMA user_version=4")
+            if version < 5:
+                if not conn.in_transaction:
+                    conn.execute("BEGIN")
+                conn.execute("ALTER TABLE attempts ADD COLUMN ttfb_ms INTEGER")
+                conn.execute("ALTER TABLE usage_rollups ADD COLUMN last_ttfb_ms INTEGER")
+                conn.execute("""CREATE TABLE rate_observations (
+                    credential_id INTEGER NOT NULL, revision TEXT NOT NULL,
+                    quota_group TEXT NOT NULL, model TEXT NOT NULL, dimension TEXT NOT NULL,
+                    remaining INTEGER NOT NULL, window TEXT NOT NULL, observed_at TEXT NOT NULL,
+                    reset_at TEXT, stale_at TEXT NOT NULL,
+                    PRIMARY KEY(credential_id,model,dimension)
+                )""")
+                conn.execute("PRAGMA user_version=5")
         if os.name != "nt":
             self.path.chmod(0o600)
 
@@ -288,6 +320,7 @@ class Store:
             return dict(row) if row else None
 
     def record_attempt(self, **values: Any) -> None:
+        values.setdefault("ttfb_ms", None)
         columns = (
             "ts",
             "request_id",
@@ -311,6 +344,7 @@ class Store:
             "plan_type",
             "credential_label",
             "profile_slug",
+            "ttfb_ms",
         )
         with self.connection() as conn:
             # Legacy callers can omit snapshots; gateway callers supply immutable attempt metadata.
@@ -361,7 +395,7 @@ class Store:
                 dict(row)
                 for row in conn.execute(
                     """SELECT ts, request_id, provider_id, model, outcome, http_status,
-                          latency_ms, streamed, attempt_idx, error_class, skipped_json,
+                          latency_ms, ttfb_ms, streamed, attempt_idx, error_class, skipped_json,
                           provider_cost_usd, estimated_cost_usd, profile_slug, credential_label,
                           plan_type FROM attempts ORDER BY id DESC LIMIT ?""",
                     (limit,),
@@ -438,6 +472,8 @@ class Store:
             fingerprint=hashlib.sha256((secret or env).encode()).hexdigest()[:12],
         )
         with self.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            reject_duplicate(conn, values["provider_id"], values["base_url"], secret, env)
             cursor = conn.execute(
                 f"INSERT INTO credentials ({','.join(values)}) VALUES ({','.join('?' for _ in values)})",
                 list(values.values()),
@@ -448,6 +484,81 @@ class Store:
 
     def save_policy(self, policy, targets, slug="default"):
         self.save_profile(slug, policy, targets)
+
+    def setup_default(self, identifier, model):
+        from quotamesh.policy import Policy
+
+        with self.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if conn.execute("SELECT 1 FROM profile_targets WHERE profile_id=1").fetchone():
+                raise ValueError("Default is already configured; edit its project profile.")
+            key = conn.execute(
+                "SELECT provider_id FROM credentials WHERE id=? AND deleted_at IS NULL",
+                (identifier,),
+            ).fetchone()
+            if not key:
+                raise LookupError("Credential not found")
+            policy = Policy(
+                targets=[{"provider_id": key[0], "model": model, "credential_id": identifier}]
+            ).model_dump()
+            policy.pop("targets")
+            conn.execute(
+                "INSERT OR IGNORE INTO project_profiles(id,name,slug) VALUES(1,'Default','default')"
+            )
+            conn.execute(
+                "UPDATE project_profiles SET " + ",".join(k + "=?" for k in policy) + " WHERE id=1",
+                tuple(policy.values()),
+            )
+            conn.execute(
+                "INSERT INTO profile_targets(profile_id,position,provider_id,model,credential_id) VALUES(1,1,?,?,?)",
+                (key[0], model, identifier),
+            )
+
+    def save_rates(self, decision, rows):
+        if not rows:
+            return
+        with self.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            current = conn.execute(
+                "SELECT fingerprint,base_url FROM credentials WHERE id=? AND deleted_at IS NULL",
+                (decision["credential_id"],),
+            ).fetchone()
+            if (
+                not current
+                or current[0] != decision["credential_revision"]
+                or current[1] != decision["credential_base_url"]
+            ):
+                return
+            for row in rows:
+                conn.execute(
+                    """INSERT INTO rate_observations VALUES(?,?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(credential_id,model,dimension) DO UPDATE SET
+                    revision=excluded.revision,quota_group=excluded.quota_group,
+                    remaining=excluded.remaining,window=excluded.window,observed_at=excluded.observed_at,
+                    reset_at=excluded.reset_at,stale_at=excluded.stale_at
+                    WHERE excluded.observed_at>=rate_observations.observed_at""",
+                    (
+                        decision["credential_id"],
+                        decision["credential_revision"],
+                        decision["quota_group"],
+                        decision["model"],
+                        row["dimension"],
+                        row["remaining"],
+                        row["window"],
+                        row["observed_at"],
+                        row["reset_at"],
+                        row["stale_at"],
+                    ),
+                )
+
+    def rates(self, now):
+        with self.connection() as conn:
+            return [
+                dict(r) | {"source": "PROVIDER", "stale": r["stale_at"] <= now.isoformat()}
+                for r in conn.execute(
+                    "SELECT r.* FROM rate_observations r JOIN credentials c ON c.id=r.credential_id WHERE c.deleted_at IS NULL AND c.fingerprint=r.revision"
+                )
+            ]
 
     def apply_outcome(self, decision, outcome, now):
         from quotamesh.engine.classify import next_quota_state
@@ -586,6 +697,7 @@ class Store:
 
     def edit_credential(self, identifier, values):
         with self.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
                 "SELECT * FROM credentials WHERE id=? AND deleted_at IS NULL", (identifier,)
             ).fetchone()
@@ -594,6 +706,17 @@ class Store:
             values = dict(values)
             secret = values.pop("secret_value", None)
             env = values.pop("env_name", None)
+            existing_secret = conn.execute(
+                "SELECT * FROM secrets WHERE credential_id=?", (identifier,)
+            ).fetchone()
+            reject_duplicate(
+                conn,
+                values.get("provider_id", row["provider_id"]),
+                values.get("base_url", row["base_url"]),
+                secret or (existing_secret["secret_value"] if not env else None),
+                env or (existing_secret["env_name"] if not secret else None),
+                identifier,
+            )
             for field in ("model", "allow_paid", "input_price", "output_price"):
                 values.pop(field, None)
             if (
@@ -623,6 +746,7 @@ class Store:
                 )
             ):
                 conn.execute("DELETE FROM credential_checks WHERE credential_id=?", (identifier,))
+                conn.execute("DELETE FROM rate_observations WHERE credential_id=?", (identifier,))
             conn.execute(
                 "UPDATE credentials SET " + ",".join(k + "=?" for k in values) + " WHERE id=?",
                 [*values.values(), identifier],

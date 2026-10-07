@@ -4,7 +4,21 @@ build-backend = "hatchling.build"
 
 [project]
 name = "quotamesh"
-version = "0.1.0a1"
+version = "0.1.0"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{name = "Yash Srivastava"}]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Operating System :: OS Independent",
+]
 description = "Local AI API capacity gateway"
 readme = "README.md"
 requires-python = ">=3.11"

@@ -22,6 +22,7 @@ def summarize(rows):
         "last_error_class": None,
         "last_seen_at": None,
         "last_latency_ms": None,
+        "last_ttfb_ms": None,
     }
     for row in rows:
         for name in (
@@ -47,6 +48,7 @@ def summarize(rows):
         if result["last_seen_at"] is None or row["last_seen_at"] > result["last_seen_at"]:
             result["last_seen_at"] = row["last_seen_at"]
             result["last_latency_ms"] = row["last_latency_ms"]
+            result["last_ttfb_ms"] = row.get("last_ttfb_ms")
     # A completely missing quantity remains null; partial observations are explicitly incomplete.
     for name in ("input_tokens", "output_tokens"):
         missing = result[name.split("_")[0] + "_missing"]
@@ -123,6 +125,9 @@ def record_rollup(conn, values):
         values.get("latency_ms"),
     ]
     sums = columns[6:18]
+    if "ttfb_ms" in values:
+        columns.append("last_ttfb_ms")
+        data.append(values["ttfb_ms"])
     updates = [f"{name}={name}+excluded.{name}" for name in sums]
     updates += [
         (
@@ -146,6 +151,10 @@ def record_rollup(conn, values):
         ),
         "last_seen_at=max(last_seen_at,excluded.last_seen_at)",
     ]
+    if "ttfb_ms" in values:
+        updates.append(
+            "last_ttfb_ms=CASE WHEN excluded.last_seen_at>=last_seen_at THEN excluded.last_ttfb_ms ELSE last_ttfb_ms END"
+        )
     conn.execute(
         f"INSERT INTO usage_rollups({','.join(columns)}) "
         f"VALUES({','.join('?' for _ in columns)}) ON CONFLICT "

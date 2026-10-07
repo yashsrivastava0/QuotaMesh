@@ -370,11 +370,14 @@ def test_v3_migration_preserves_rollups_and_rolls_back_on_failure(tmp_path):
     store = Store(tmp_path)
     with store.connection() as conn:
         conn.execute("DROP TABLE credential_checks")
+        conn.execute("DROP TABLE rate_observations")
+        conn.execute("ALTER TABLE attempts DROP COLUMN ttfb_ms")
+        conn.execute("ALTER TABLE usage_rollups DROP COLUMN last_ttfb_ms")
         conn.execute("PRAGMA user_version=3")
         conn.execute("INSERT INTO daily_usage VALUES('2026-10-07',99,12.34,1)")
     store = Store(tmp_path)
     with store.connection() as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 5
         assert conn.execute("SELECT cost_usd FROM daily_usage").fetchone()[0] == 12.34
         conn.execute("PRAGMA user_version=3")  # Existing conflicting table makes migration fail.
     with pytest.raises(sqlite3.OperationalError):

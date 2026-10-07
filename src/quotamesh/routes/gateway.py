@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import math
@@ -20,6 +21,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from quotamesh.engine.classify import Outcome, classify, sse_payload, usage_metadata
+from quotamesh.observations import rate_observations
 from quotamesh.routing import decision_snapshot
 from quotamesh.security import api_error, bearer_authorized
 from quotamesh.store import utc_now
@@ -169,6 +171,7 @@ async def execute_chat(request: Request, *, candidate=None, request_id=None) -> 
         profile["first_event_timeout_s"] if streamed else profile["nonstream_deadline_s"]
     )
     attempted = set()
+    attempted_secrets = set()
     context_skip = set()
     count = 0
     last_response = None
@@ -195,7 +198,18 @@ async def execute_chat(request: Request, *, candidate=None, request_id=None) -> 
             return api_error(504, "Route attempt deadline exceeded", "deadline_exceeded")
         connection = credentials[selected["credential_id"]]
         selected["credential_revision"] = connection["fingerprint"]
+        selected["credential_base_url"] = connection["base_url"]
         secret = connection["secret_value"] or os.environ.get(connection["env_name"] or "", "")
+        identity = (
+            connection["base_url"],
+            selected["provider_id"],
+            selected["model"],
+            hashlib.sha256(secret.encode()).digest(),
+        )
+        if identity in attempted_secrets:
+            attempted.add((selected["credential_id"], selected["model"]))
+            continue
+        attempted_secrets.add(identity)
         count += 1
         attempted.add((selected["credential_id"], selected["model"]))
         started = time.monotonic()
@@ -252,6 +266,17 @@ async def execute_chat(request: Request, *, candidate=None, request_id=None) -> 
                     headers=headers,
                 )
                 upstream = await client.send(upstream_request, stream=True)
+                details["ttfb_ms"] = int((time.monotonic() - started) * 1000)
+                try:
+                    request.app.state.store.save_rates(
+                        selected,
+                        rate_observations(
+                            selected["provider_id"], upstream.headers, datetime.now(UTC)
+                        ),
+                    )
+                except sqlite3.Error:
+                    request.app.state.diagnostic_write_failures += 1
+                    LOG.warning("Could not persist passive rate observations")
                 status = upstream.status_code
                 media_type = upstream.headers.get("content-type", "application/json").split(";")[0]
                 if 300 <= status < 400:
@@ -315,6 +340,7 @@ async def execute_chat(request: Request, *, candidate=None, request_id=None) -> 
                             status = 502
                         else:
                             first = preface + first
+                            details["ttfb_ms"] = int((time.monotonic() - started) * 1000)
                             outcome = Outcome("ok", False)
                         break
         except asyncio.CancelledError:
