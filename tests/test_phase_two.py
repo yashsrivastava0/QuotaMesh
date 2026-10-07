@@ -556,7 +556,7 @@ def test_v1_database_migrates_without_erasing_connection_history_or_paid_uncerta
     assert store.routing_snapshot(datetime.now(UTC))[4]["unknown"]
     Store(tmp_path)  # Reopening must not backfill the same history twice.
     with store.connection() as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
         assert conn.execute("SELECT unknown_cost FROM daily_usage").fetchone()[0] == 1
 
 

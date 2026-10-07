@@ -53,7 +53,7 @@ def test_v2_upgrade_backfills_once_without_resetting_pruned_paid_spend(tmp_path)
     assert store.activity()["requests"][0]["attempts"][0]["credential_label"] == "Legacy paid"
     assert summarize(Store(tmp_path).usage_rows()) == totals
     with store.connection() as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
         assert (
             "retained history"
             in conn.execute("SELECT value FROM settings WHERE key='usage_coverage'").fetchone()[0]

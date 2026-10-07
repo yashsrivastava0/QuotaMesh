@@ -6,6 +6,13 @@ let controller = null;
 let currentSlug = 'default';
 let creatingProfile = false;
 let historyCursor = null;
+let refreshVersion = 0;
+let policyRefreshPending = false;
+let historyVersion = 0;
+let integrationData = null;
+let diagnosticData = [];
+let doctorController = null;
+const credentialDeleteConfirmations = new Set();
 const reasons = {
   no_credentials: 'No credential matches this target provider',
   disabled: 'Disabled by you or the route', expired: 'Expiry date has passed', invalid: 'Key rejected — replace or rotate it',
@@ -29,7 +36,8 @@ async function api(path, body, method = 'POST') {
   const response = await fetch(path, body === undefined ? {} : {
     method, headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
   });
-  const result = await response.json();
+  let result;
+  try { result = await response.json(); } catch { throw new Error(`Local request failed (HTTP ${response.status}). Refresh or reopen the startup link.`); }
   if (!response.ok) throw new Error(result.error?.message || 'Request failed');
   return result;
 }
@@ -112,9 +120,10 @@ function renderCredentials() {
       $('#cancel-edit').hidden = false; form.closest('details').open = true; form.scrollIntoView({behavior:'smooth',block:'center'});
     }; actions.append(edit);
     const remove = node('button', 'Delete', 'compact danger secondary'); remove.type = 'button';
+    if (credentialDeleteConfirmations.has(credential.id)) remove.textContent = 'Confirm deletion';
     remove.onclick = async () => {
-      if (remove.dataset.confirm !== 'yes') { remove.dataset.confirm = 'yes'; remove.textContent = 'Confirm deletion'; return; }
-      try { await api(`/api/credentials/${credential.id}`, {}, 'DELETE'); await refresh(); notice('Secret deleted. Historical usage retained.'); } catch (error) { notice(error.message, true); }
+      if (!credentialDeleteConfirmations.has(credential.id)) { credentialDeleteConfirmations.add(credential.id); remove.textContent = 'Confirm deletion'; return; }
+      try { await api(`/api/credentials/${credential.id}`, {}, 'DELETE'); credentialDeleteConfirmations.delete(credential.id); await refresh(); notice('Secret deleted. Historical usage retained.'); } catch (error) { notice(error.message, true); }
     }; actions.append(remove);
     for (const [action, label] of [[credential.enabled ? 'disable' : 'enable', credential.enabled ? 'Disable' : 'Enable'], ['reset', 'Reset shared state']]) {
       const button = node('button', label, 'compact secondary'); button.type = 'button';
@@ -159,25 +168,42 @@ function renderAttempts(attempts) {
   }
 }
 async function refresh(editPolicy = false) {
-  const [status, wallet] = await Promise.all([api('/api/status?profile='+encodeURIComponent(currentSlug)), api('/api/wallet')]); state = status.routing;
+  policyRefreshPending ||= editPolicy;
+  const version = ++refreshVersion; const slug = currentSlug;
+  const results = await Promise.all([
+    api('/api/status?profile='+encodeURIComponent(slug)), api('/api/wallet'),
+    api('/api/explain?profile='+encodeURIComponent(slug)),
+    api('/api/integrations?profile='+encodeURIComponent(slug)+'&shell='+$('#integration-shell').value),
+    api('/api/doctor'), api('/api/catalog'),
+  ]).catch(error => { if (version !== refreshVersion || slug !== currentSlug) return null; throw error; });
+  if (!results) return;
+  const [status, wallet, explanation, integrations, diagnostics, catalog] = results;
+  if (version !== refreshVersion || slug !== currentSlug) return;
+  state = status.routing; integrationData = integrations; diagnosticData = diagnostics.checks;
   renderWallet(wallet);
   const profileSelect = $('#profile-select'); profileSelect.replaceChildren();
+  if (!wallet.profiles.length) { const option = node('option','Default · configure qm/default'); option.value = 'default'; profileSelect.append(option); }
   for (const profile of wallet.profiles) { const option = node('option', profile.name+' · qm/'+profile.slug+(profile.enabled ? '' : ' · disabled')); option.value = profile.slug; profileSelect.append(option); }
   profileSelect.value = currentSlug;
-  $('#delete-profile').dataset.confirm = ''; $('#delete-profile').textContent = 'Delete profile';
+  if ($('#delete-profile').dataset.slug !== slug) {
+    $('#delete-profile').dataset.slug = slug; $('#delete-profile').dataset.confirm = ''; $('#delete-profile').textContent = 'Delete profile';
+  }
   $('#profile-alias').textContent = creatingProfile ? 'UNSAVED PROFILE' : 'qm/'+currentSlug;
   $('#delete-profile').hidden = currentSlug === 'default' || creatingProfile;
   await loadHistory();
-  renderCredentials(); renderDecisions(status.decisions); renderAttempts(status.recent_attempts);
+  if (version !== refreshVersion || slug !== currentSlug) return;
+  renderCredentials(); renderDecisions(explanation.decisions); renderAttempts(status.recent_attempts);
+  renderExplanation(explanation); renderIntegration(); renderDoctor(); renderCatalog(catalog);
   $('#metric-keys').textContent = state.credentials.length;
   $('#metric-spend').textContent = '$'+state.usage.daily.toFixed(4);
   $('#spend-note').textContent = `qm/${currentSlug}: ${status.observed_today.routed_requests} routed request(s), ${status.observed_today.attempts} upstream attempt(s) today [LOCAL]. Paid spend: $${state.usage.daily.toFixed(4)} today / $${state.usage.monthly.toFixed(4)} this UTC month. `+(state.usage.unknown ? 'Some costs are unknown; totals are incomplete. ' : '')+(status.diagnostic_write_failures ? `Metadata write failures: ${status.diagnostic_write_failures}. ` : '')+'Only gateway traffic is visible.';
-  if (editPolicy) {
+  if (policyRefreshPending && !creatingProfile) {
     fillPolicy();
     $('#profile-name').value = state.profile?.name || 'Default';
     $('#profile-slug').value = currentSlug;
     $('#profile-slug').readOnly = true;
     $('#profile-template').value = 'advanced';
+    policyRefreshPending = false;
   }
   // New credentials must become selectable without discarding unsaved target edits.
   for (const row of $('#targets').children) {
@@ -186,6 +212,9 @@ async function refresh(editPolicy = false) {
     pool.replaceChildren();
     for (const [id, label] of [['', 'Provider pool (by priority)'], ...state.credentials.filter(c => c.provider_id === provider).map(c => [c.id,c.label])]) {
       const option = node('option', label); option.value = id; pool.append(option);
+    }
+    if (selected && ![...pool.options].some(option => option.value === selected)) {
+      const option = node('option', 'Unavailable key #'+selected+' — choose a replacement'); option.value = selected; pool.append(option);
     }
     pool.value = selected;
   }
@@ -199,18 +228,32 @@ $('#cancel-edit').onclick = () => {
 };
 $('#credential-form').onsubmit = async event => {
   event.preventDefault(); const form = event.currentTarget;
+  if (form.dataset.busy === 'yes') return;
+  form.dataset.busy = 'yes'; const shouldCheck = form.dataset.check === 'yes'; delete form.dataset.check;
+  for (const button of form.querySelectorAll('button')) button.disabled = true;
   const values = Object.fromEntries(new FormData(form)); const identifier = values.credential_id; delete values.credential_id;
   values.priority = Number(values.priority || 0); values.starting_credit_usd = numberOrNull(values.starting_credit_usd);
   for (const name of ['quota_group','account_label','trial_expires_at']) values[name] = values[name] || null;
   for (const name of ['secret_value','env_name']) if (!values[name]) delete values[name];
   try {
-    await api(identifier ? '/api/credentials/'+identifier : '/api/credentials', values, identifier ? 'PATCH' : 'POST');
-    $('#cancel-edit').click(); await refresh();
+    const saved = await api(identifier ? '/api/credentials/'+identifier : '/api/credentials', values, identifier ? 'PATCH' : 'POST');
+    $('#cancel-edit').onclick(); await refresh();
     notice(identifier ? 'Credential updated. Secret rotation keeps shared cooldowns and usage.' : 'Credential saved as untested. Choose it in a target and save your profile.');
+    if (shouldCheck) {
+      $('#doctor-status').textContent = 'Checking listing access…';
+      const result = await api('/api/doctor', {credential_id:Number(identifier || saved.credential_id), mode:'models'});
+      $('#doctor-status').textContent = checkText(result); await refresh();
+      $('#doctor').scrollIntoView({behavior:'smooth',block:'start'});
+    }
   } catch (error) { notice(error.message, true); }
+  finally { delete form.dataset.busy; for (const button of form.querySelectorAll('button')) button.disabled = false; }
 };
 $('#policy-form').onsubmit = async event => {
   event.preventDefault(); const form = event.currentTarget; const values = {};
+  if (form.dataset.busy === 'yes') return;
+  if (!$('#profile-name').checkValidity() || !$('#profile-slug').checkValidity()) {
+    $('#profile-name').reportValidity(); $('#profile-slug').reportValidity(); return;
+  }
   for (const control of form.elements) {
     if (!control.name) continue;
     values[control.name] = control.type === 'checkbox' ? control.checked : numberOrNull(control.value);
@@ -224,10 +267,12 @@ $('#policy-form').onsubmit = async event => {
   const slug = $('#profile-slug').value; const name = $('#profile-name').value;
   if (!slug || !name.trim()) { notice('Enter a profile name and a lowercase slug.', true); return; }
   values.slug = slug; values.name = name;
+  form.dataset.busy = 'yes'; form.querySelector('[type="submit"]').disabled = true;
   try {
     await api(creatingProfile ? '/api/profiles' : '/api/profiles/'+currentSlug, values, creatingProfile ? 'POST' : 'PUT');
     currentSlug = slug; creatingProfile = false; await refresh(true); notice('Profile saved. The dry run shows the active policy.');
   } catch (error) { notice(error.message, true); }
+  finally { delete form.dataset.busy; form.querySelector('[type="submit"]').disabled = false; }
 };
 if ($('#demo-form')) $('#demo-form').onsubmit = async event => {
   event.preventDefault(); try { await api('/api/demo', Object.fromEntries(new FormData(event.currentTarget))); currentSlug = 'default'; creatingProfile = false; await refresh(true); $('#test-output').textContent = 'Scenario loaded. Send a request to observe it.'; $('#test-summary').textContent = 'No test sent in this scenario yet.'; notice('Demo reset. Use stream mode for the streaming scenarios.'); } catch (error) { notice(error.message, true); }
@@ -263,8 +308,6 @@ $('#test-form').onsubmit = async event => {
   } catch (error) { $('#test-summary').textContent = error.name === 'AbortError' ? 'Request stopped. Upstream cancellation recorded when detected.' : error.message; }
   finally { controller = null; $('#cancel-test').hidden = true; await refresh().catch(error => notice(error.message, true)); form.querySelector('[type="submit"]').disabled = false; }
 };
-fillPolicy();
-refresh(true).catch(error => notice(error.message, true));
 
 function tagged(label, value, source) { return node('p', `${label}: ${value} [${source}]`, 'fine'); }
 function dollars(value) { return value == null ? 'Unknown' : '$'+value.toFixed(4); }
@@ -310,9 +353,11 @@ function renderWallet(wallet) {
   }
 }
 async function loadHistory(append = false) {
+  const version = ++historyVersion; const slug = currentSlug;
   const profile = $('#history-filter').value === 'selected' ? '&profile='+encodeURIComponent(currentSlug) : '';
   const cursor = append && historyCursor ? '&before='+historyCursor : '';
   const data = await api('/api/activity?limit=20'+profile+cursor);
+  if (version !== historyVersion || slug !== currentSlug) return;
   if (!append) $('#request-history').replaceChildren();
   if (!append && !data.requests.length) $('#request-history').append(node('p','No routed requests in this view yet.','fine'));
   for (const request of data.requests) {
@@ -334,6 +379,7 @@ $('#more-history').onclick = () => loadHistory(true).catch(error => notice(error
 $('#history-filter').onchange = () => loadHistory().catch(error => notice(error.message,true));
 $('#profile-select').onchange = async event => {
   currentSlug = event.target.value; creatingProfile = false;
+  $('#doctor-consent').checked = false;
   await refresh(true).catch(error => notice(error.message,true));
 };
 $('#new-profile').onclick = () => {
@@ -370,3 +416,140 @@ $('#profile-template').onchange = event => {
   $('#targets').replaceChildren(); for (const target of targets) targetRow(target);
   notice('Template applied to this form. Inspect the explicit order and permissions, then save.');
 };
+
+function renderExplanation(data) {
+  const eligible = data.decisions.filter(d => d.eligible).length;
+  $('#explain-summary').textContent = data.configured ? `${data.selected ? 'Next: '+data.selected.label+' / '+data.selected.model : 'No eligible candidate'} · ${eligible} eligible · evaluated ${new Date(data.evaluated_at).toLocaleTimeString()}. Saved policy: qm/${currentSlug}.` : 'Add access, choose an exact model, and save your default profile. No upstream request has been made.';
+  $('#cap-explanation').replaceChildren();
+  for (const [period, cap] of Object.entries(data.caps)) {
+    $('#cap-explanation').append(node('p', `${period === 'daily' ? 'Daily' : 'Monthly'} paid cap: ${cap.cap_usd == null ? 'none' : dollars(cap.cap_usd)} · observed ${dollars(cap.observed_usd)}${cap.incomplete ? ' + unknown costs' : ''} · headroom ${cap.headroom_usd == null ? 'unknown / not capped' : dollars(cap.headroom_usd)} [LOCAL / UTC]`, 'fine'));
+  }
+  $('#cap-explanation').append(node('p', `Paid: ${data.profile?.allow_paid ? 'allowed' : 'blocked'} · trials: ${data.profile?.allow_trial ? 'allowed' : 'blocked'}. Earliest known recovery: ${data.earliest_recovery_at || 'unknown / no timed block'}. Recovery may not remove other policy blocks.`, 'fine'));
+  $('#unallocated').replaceChildren(node('p', 'Other owned access outside this profile:', 'fine'));
+  if (!data.unallocated.length) $('#unallocated').append(node('p','All credentials are listed in this profile.','fine'));
+  for (const credential of data.unallocated) $('#unallocated').append(node('p', credential.label+' · '+credential.reason,'fine'));
+}
+function renderIntegration() {
+  if (!integrationData) return;
+  const kind = $('#integration-client').value;
+  $('#integration-alias').textContent = integrationData.model;
+  $('#integration-code').textContent = integrationData.snippets[kind];
+  $('#integration-instructions').textContent = integrationData.instructions[kind];
+  $('#integration-notice').textContent = integrationData.notice+(integrationData.enabled ? '' : ' This saved profile is disabled.')+(creatingProfile ? ' Your new profile is unsaved; these instructions use the selected saved profile.' : '');
+  $('#copy-status').textContent = '';
+}
+$('#integration-client').onchange = renderIntegration;
+$('#integration-shell').onchange = () => refresh().catch(error => notice(error.message,true));
+$('#copy-integration').onclick = async () => {
+  try { await navigator.clipboard.writeText($('#integration-code').textContent); $('#copy-status').textContent = 'Copied.'; }
+  catch { const selection = window.getSelection(); const range = document.createRange(); range.selectNodeContents($('#integration-code')); selection.removeAllRanges(); selection.addRange(range); $('#integration-code').focus(); $('#copy-status').textContent = 'Text selected. Press Ctrl+C or Command+C to copy.'; }
+};
+function checkText(check) {
+  return `${check.mode === 'models' ? 'Listing' : 'Generation'}: ${check.outcome.replaceAll('_',' ')} · ${check.http_status == null ? 'no upstream response' : 'HTTP '+check.http_status} · ${check.latency_ms ?? 'unknown'} ms · ${check.checked_at}${check.stale ? ' · stale (over 24 hours)' : ''}`;
+}
+function doctorTargets() {
+  const generation = $('#doctor-mode').value === 'generation';
+  $('#doctor-target-label').hidden = !generation; $('#doctor-consent-label').hidden = !generation;
+  const selected = $('#doctor-target').value; $('#doctor-target').replaceChildren();
+  const credential = state.credentials.find(c => c.id === Number($('#doctor-credential').value));
+  for (const target of state.targets.filter(t => credential && t.provider_id === credential.provider_id && (t.credential_id == null || t.credential_id === credential.id))) {
+    const option = node('option', `${target.position}. ${target.provider_id} / ${target.model}`); option.value = target.position; $('#doctor-target').append(option);
+  }
+  if ([...$('#doctor-target').options].some(o => o.value === selected)) $('#doctor-target').value = selected;
+  $('#doctor-form button[type=submit]').disabled = !!doctorController || !credential || (generation && !$('#doctor-target').options.length);
+}
+function renderDoctor() {
+  const selected = $('#doctor-credential').value; $('#doctor-credential').replaceChildren();
+  for (const credential of state.credentials) { const option = node('option', credential.label+' · '+credential.provider_id); option.value = credential.id; $('#doctor-credential').append(option); }
+  if ([...$('#doctor-credential').options].some(o => o.value === selected)) $('#doctor-credential').value = selected;
+  doctorTargets(); $('#doctor-results').replaceChildren();
+  if (!diagnosticData.length) $('#doctor-results').append(node('p','No checks recorded. Saved access remains untested until you run a check or route traffic.','fine'));
+  for (const check of diagnosticData) {
+    const credential = state.credentials.find(c => c.id === check.credential_id); if (!credential) continue;
+    const card = node('article',undefined,'credential'); card.append(node('strong',credential.label),node('p',checkText(check),'fine'));
+    card.append(node('p',check.mode === 'models' ? `Check time and latency [LOCAL]. Model IDs [${check.models_source}]. Generation permissions and quota remain unverified.` : 'Generation test [LOCAL]; any attempt cost is included in usage and paid caps.','fine'));
+    if (check.models.length) {
+      const models = select(check.models.map(id => [id,id]),check.models[0]); models.setAttribute('aria-label','Discovered model for '+credential.label); card.append(models);
+      const use = node('button','Use model in profile form','compact secondary'); use.type = 'button';
+      use.onclick = () => {
+        for (const row of [...$('#targets').children]) if (!row.querySelector('[data-field="model"]').value) row.remove();
+        if ($('#targets').children.length >= 30) { notice('Profiles allow at most 30 targets.',true); return; }
+        targetRow({provider_id:credential.provider_id, model:models.value, credential_id:credential.id});
+        notice('Model added to the profile form. Inspect permissions and save; discovery never saves a target automatically.'); $('#policy').scrollIntoView({behavior:'smooth'});
+      }; card.append(use);
+    }
+    $('#doctor-results').append(card);
+  }
+}
+$('#doctor-mode').onchange = () => { $('#doctor-consent').checked = false; doctorTargets(); };
+$('#doctor-credential').onchange = () => { $('#doctor-consent').checked = false; doctorTargets(); };
+$('#refresh-doctor').onclick = () => refresh().catch(error => notice(error.message,true));
+$('#cancel-doctor').onclick = () => doctorController?.abort();
+$('#doctor-form').onsubmit = async event => {
+  event.preventDefault(); if (doctorController) return;
+  const generation = $('#doctor-mode').value === 'generation';
+  if (generation && !$('#doctor-consent').checked) { $('#doctor-status').textContent = 'Authorize quota use before running generation.'; $('#doctor-consent').focus(); return; }
+  const values = {credential_id:Number($('#doctor-credential').value), mode:$('#doctor-mode').value, profile:currentSlug, position:generation ? Number($('#doctor-target').value) : null, consent:generation && $('#doctor-consent').checked};
+  doctorController = new AbortController(); doctorTargets(); $('#cancel-doctor').hidden = false;
+  for (const selector of ['#doctor-mode','#doctor-credential','#doctor-target']) $(selector).disabled = true;
+  $('#doctor-status').textContent = 'Running explicit check…';
+  try {
+    const response = await fetch('/api/doctor',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(values),signal:doctorController.signal});
+    const result = await response.json(); if (!response.ok) throw new Error(result.error?.message || 'Check failed');
+    $('#doctor-status').textContent = checkText(result)+(result.saved ? '' : ' · result not saved')+' · '+result.notice;
+    await refresh();
+  } catch(error) { $('#doctor-status').textContent = error.name === 'AbortError' ? 'Check stopped.' : error.message; }
+  finally { doctorController = null; $('#cancel-doctor').hidden = true; for (const selector of ['#doctor-mode','#doctor-credential','#doctor-target']) $(selector).disabled = false; $('#doctor-consent').checked = false; doctorTargets(); }
+};
+$('#save-check').onclick = () => { const form = $('#credential-form'); if (form.reportValidity()) { form.dataset.check = 'yes'; form.requestSubmit(); } };
+$('#preview-env').onclick = async () => {
+  const button = $('#preview-env'); button.disabled = true;
+  try {
+    const data = await api('/api/environment'); const area = $('#environment-results'); area.replaceChildren();
+    for (const variable of data.variables) {
+      const label = node('label',undefined,'check'); const control = node('input'); control.type = 'checkbox'; control.value = variable.env_name; control.disabled = !variable.present || variable.configured;
+      label.append(control,node('span',`${variable.env_name} · ${variable.configured ? 'already configured' : variable.present ? 'present' : 'not present'}`)); area.append(label);
+    }
+    const save = node('button','Import selected as UNKNOWN','secondary'); save.type = 'button';
+    save.onclick = async () => {
+      const names = [...area.querySelectorAll('input:checked')].map(control => control.value);
+      if (!names.length) { notice('Select a present variable to import.',true); return; }
+      save.disabled = true;
+      try { const result = await api('/api/environment/import',{names}); await refresh(); notice(`${result.imported.length} environment reference(s) imported. Paid stays disabled; no targets were added.`); area.replaceChildren(); }
+      catch(error) { notice(error.message,true); save.disabled = false; }
+    }; area.append(save,node('p',data.notice,'fine'));
+  } catch(error) { notice(error.message,true); } finally { button.disabled = false; }
+};
+function renderCatalog(data) {
+  $('#catalog-entries').replaceChildren();
+  for (const entry of data.entries) {
+    const card = node('article',undefined,'catalog-entry'); card.append(node('h3',entry.name),node('p',entry.access_note,'fine'),node('p',`${entry.configured ? 'Configured' : 'Not configured as a preset'} · ${entry.compatibility} · verified ${entry.last_verified}`,'fine'));
+    const links = node('div',undefined,'actions');
+    for (const [title,href] of [['Official docs',entry.docs_url],['Get access',entry.signup_url]]) { const link = node('a',title,'text-link'); link.href = href; link.target = '_blank'; link.rel = 'noopener noreferrer'; links.append(link); }
+    const add = node('a',entry.preset ? 'Configure access' : 'Custom setup','text-link'); add.href = '#access';
+    add.onclick = () => { if ($('#credential-form').elements.credential_id.value) { notice('Finish or cancel your credential edit before adding access.',true); return; } $('#credential-form').elements.provider_id.value = entry.preset ? entry.id : 'custom'; $('#credential-form').closest('details').open = true; };
+    links.append(add); card.append(links); $('#catalog-entries').append(card);
+  }
+}
+if (/Windows/i.test(navigator.userAgent)) $('#integration-shell').value = 'powershell';
+fillPolicy(); refresh(true).catch(error => notice(error.message,true));
+const activityFeed = new EventSource('/events'); let activityTimer = null;
+function activityRefresh() {
+  clearTimeout(activityTimer); activityTimer = setTimeout(() => {
+    if (!controller && !doctorController && document.visibilityState === 'visible') refresh().catch(error => notice(error.message,true));
+  },300);
+}
+activityFeed.addEventListener('activity',activityRefresh);
+activityFeed.addEventListener('refresh',() => { $('#activity-status').textContent = 'Local activity connected.'; });
+activityFeed.onopen = () => { $('#activity-status').textContent = 'Local activity connected.'; activityRefresh(); };
+activityFeed.onerror = () => { $('#activity-status').textContent = 'Activity reconnecting. Refresh dry run to update manually.'; };
+window.addEventListener('pagehide',() => activityFeed.close());
+document.addEventListener('visibilitychange',() => { if (document.visibilityState === 'visible') activityRefresh(); });
+const sectionObserver = new IntersectionObserver(entries => {
+  for (const entry of entries) if (entry.isIntersecting) {
+    for (const link of document.querySelectorAll('.section-nav a')) {
+      if (link.hash === '#'+entry.target.id) link.setAttribute('aria-current','location'); else link.removeAttribute('aria-current');
+    }
+  }
+},{rootMargin:'-10% 0px -65% 0px'});
+for (const section of document.querySelectorAll('main > [id]')) sectionObserver.observe(section);

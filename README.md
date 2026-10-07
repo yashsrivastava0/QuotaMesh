@@ -12,16 +12,16 @@ Use the API access you already own through one local endpoint, with explicit ord
 
 </div>
 
-**Current scope: phases one, two, and three.** QuotaMesh has an authenticated localhost
+**Current scope: phases one through four.** QuotaMesh has an authenticated localhost
 Chat Completions gateway, deterministic fallback, shared cooldowns, expiry and paid caps,
 a grouped FREE/TRIAL/PAID Capacity Wallet, editable credentials, named Project Profiles,
-and durable local usage with expandable metadata-only history. Existing `qm/default`
+durable local usage with expandable metadata-only history, Available Now/Explain Route,
+generated integration snippets, on-demand Doctor, environment import, and a dated Access Catalog. Existing `qm/default`
 clients keep working; each new project uses `qm/<slug>`. This is an alpha developer tool.
 
 QuotaMesh does not create capacity, bypass limits, or make paid calls free. Counts and
-balances cover traffic through this gateway; provider quota stays unknown. Phase four
-adds Doctor, the Access Catalog and generated integration snippets. Phase five covers
-release/cross-platform QA and separately gated extensions: **two phases remain**.
+balances cover traffic through this gateway; provider quota stays unknown. Phase five covers
+release/cross-platform QA and separately gated extensions. No live-provider readiness is implied.
 
 ## Quick start
 
@@ -43,19 +43,27 @@ In the dashboard:
 
 1. **Add API access.** Choose a provider, plan, and either a secret or an environment
    reference. Label is optional; custom endpoints also need a base URL. No model is
-   needed to save a credential, and saving makes no provider call.
+   needed to save a credential. **Save as untested** makes no provider call; **Save and test
+   listing access** explicitly contacts `/models` without generating a response.
 2. **Review My AI Capacity.** Shared provider/quota groups appear once with their keys,
    observed usage, expiry, model states and source badges. Starting dollar credit is
    manual; estimated remaining credit is local, never a live provider balance.
 3. **Save a Project Profile.** Keep default or create a name and immutable slug. Choose
    exact provider/model targets, key pools or pinned keys, order, permissions, and caps.
    Templates only edit the form; inspect and save the explicit result. Paid starts off.
-4. **Test and inspect.** The dry run makes no network call. An explicit test follows the
+4. **Explain and connect.** Available Now shows the saved policy's eligible and skipped
+   candidates, paid-cap evidence, and recovery times. Connect generates Python, Node,
+   cURL/PowerShell, environment and OpenCode instructions for the selected saved profile.
+5. **Test and inspect.** The dry run makes no network call. An explicit test follows the
    selected saved profile and can spend real quota when allowed. Expand its history to
    see ordered attempts and skips; prompts and responses are never saved there.
 
+Doctor lists models or tests exactly one selected profile target. Generation requires an
+explicit quota-use action and obeys the saved paid rules; it never falls back to another
+key. Listing success does not prove generation permissions or remaining quota.
+
 To update an existing checkout, run `git switch main` and `git pull --ff-only` before
-installing. Back up your data directory before upgrading; schema v1/v2 migrates to v3.
+installing. Back up your data directory before upgrading; schema v1/v2/v3 migrates to v4.
 
 ## Test without API keys
 
@@ -66,7 +74,9 @@ installing. Back up your data directory before upgrading; schema v1/v2 migrates 
 The demo runs on **127.0.0.1:8788**, prints a one-time dashboard link, uses temporary
 data, mounts a local fake provider, and deletes its store on exit. It starts with free,
 trial and paid sources, two trial keys sharing one $20 credit balance, and named profiles.
-Use the test panel; dollars, expiry and responses here are simulated.
+Use the test panel; dollars, expiry and responses here are simulated. Doctor model listing
+is simulated too. The CLI prints an isolated `key --data-dir` command; Connect uses that
+command in the demo environment snippet instead of reading your normal gateway key.
 
 | Scenario | What to observe |
 | --- | --- |
@@ -156,6 +166,12 @@ removing `<QUOTAMESH_DATA_DIR>/paid-accounting-incomplete`; resetting a key does
 
 ## Connect a client
 
+The dashboard's **Connect** section uses the actual port and selected saved profile. Set
+its generated environment variables first, then copy the client snippet. On Windows,
+choose PowerShell. OpenCode configuration uses `@ai-sdk/openai-compatible` for Chat
+Completions and an environment key reference; merge it into your existing configuration.
+Native Responses/Messages clients remain outside this milestone.
+
 ```sh
 export QUOTAMESH_KEY="$(.venv/bin/quotamesh key)"
 curl http://127.0.0.1:8787/v1/chat/completions \
@@ -184,6 +200,10 @@ Enter the key in the dashboard or set a variable such as `QM_OPENAI_KEY`,
 `QM_GEMINI_KEY`, `QM_GROQ_KEY`, or `QM_NIM_KEY` **before starting QuotaMesh**, then enter
 that variable's name in the credential form. Variables are references, not automatic
 provider imports; `.env` files are not loaded. Changing a process variable requires restart.
+The environment preview/import recognizes `OPENAI_API_KEY`, `GEMINI_API_KEY`,
+`GOOGLE_API_KEY`, `GROQ_API_KEY`, and `NVIDIA_API_KEY` in the **server process**.
+It never returns values, creates references as UNKNOWN by default, and changes no profile
+targets or permissions. Review the declared plan before deliberately allowing paid use.
 The local gateway key is generated automatically; there is no QuotaMesh cloud API key.
 
 Cloud users should enter secrets securely in environment settings, not chat. If proxy
@@ -193,9 +213,28 @@ hosts are `api.openai.com`, `generativelanguage.googleapis.com`, `api.groq.com`,
 like the `QM_*` examples above. Add only the destinations you actually use.
 
 Provider-free tests verify the decision engine. They do **not** establish live account
-permissions, available models, or every provider feature. Google/OpenAI documentation was
-checked during this implementation; Groq/NVIDIA documentation returned HTTP 403 in this
-machine, and no live provider calls were made. See [the implementation plan](docs/phase-two-plan.md).
+permissions, available models, or every provider feature. The Access Catalog links to
+official provider documentation with dated, cautious notes; it is not quota or pricing
+truth. No live provider calls were made during Phase 4 verification.
+
+### Small CLI utilities
+
+Commands below contact the running local server, using its local key and data directory.
+Use `--port` for a non-default port; environment import reads the server's environment.
+
+```sh
+quotamesh doctor 1
+quotamesh doctor 1 --generation --consent --profile default --position 1
+quotamesh profile test default
+quotamesh env default --shell bash
+quotamesh import-env OPENAI_API_KEY
+quotamesh add --provider openai --plan UNKNOWN --env-name OPENAI_API_KEY
+quotamesh reset 1
+quotamesh tail
+```
+
+`add` prompts privately for a key when no environment reference is supplied. `reset`
+does not restore quota or erase spend. `tail` contains metadata notifications only.
 
 ## Local API and security
 
@@ -205,6 +244,12 @@ machine, and no live provider calls were made. See [the implementation plan](doc
 | `GET /v1/models` | Enabled profile aliases | Local bearer key |
 | `POST /v1/chat/completions` | Stream/non-stream routing | Local bearer key |
 | `GET /api/status`, `/api/dry-run` | Safe metadata / shared selector; optional `?profile=slug` | Browser session or local bearer |
+| `GET /api/explain` | One snapshot: candidates, skips, cap evidence and recovery; optional `profile` | Browser session or local bearer |
+| `GET /api/integrations` | Snippets; optional `profile` and `shell=bash\|powershell` | Browser session or local bearer |
+| `GET /api/doctor`, `POST /api/doctor` | Sanitized observations / explicit listing or single-target generation | Browser session or local bearer |
+| `GET /api/environment`, `POST /api/environment/import` | Known server variable names / reference import | Browser session or local bearer |
+| `GET /api/catalog` | Dated docs/access links and configured preset state | Browser session or local bearer |
+| `GET /events` | Bounded metadata-only local activity SSE | Browser session or local bearer |
 | `POST /api/credentials` | Add a write-only credential, no model required | Browser session or local bearer |
 | `PATCH /api/credentials/{id}`, `DELETE /api/credentials/{id}` | Edit/rotate or archive a credential; omitted secret fields preserve it | Browser session or local bearer |
 | `GET /api/wallet` | Grouped sources and observed usage with truth badges | Browser session or local bearer |
@@ -227,8 +272,8 @@ Client-provided labels are not persisted. There is no telemetry or background qu
 Secrets entered directly are plaintext in local SQLite, with restrictive Unix permissions;
 Windows does not provide equivalent guarantees through POSIX mode bits. Data defaults to
 `~/.local/share/quotamesh` or `%LOCALAPPDATA%/QuotaMesh`. Set `QUOTAMESH_DATA_DIR` to isolate
-it. Schema v1/v2 migrates transactionally to v3; back up before upgrading. Older builds
-cannot read v3. Paid cap totals survive upgrades, deletion and pruning. Retained attempts
+it. Schema v1/v2/v3 upgrades to v4; the v3-to-v4 addition is transactional. Back up before upgrading. Older builds
+cannot read v4. Paid cap totals survive upgrades, deletion and pruning. Retained attempts
 are backfilled once; earlier pruned detail cannot be reconstructed and coverage is labeled.
 Legacy paid costs without evidence stay unknown. Estimated remaining credit stays unknown
 for legacy stores with incomplete coverage, missing cost, or conflicting starting amounts.
@@ -258,10 +303,15 @@ An optional real-browser check uses Playwright Chromium:
 
 Set `CHROMIUM_PATH=/path/to/chromium` to use a system browser instead. The smoke script launches and stops its
 own isolated demo, checks the mixed wallet, profile CRUD, credential editing/rotation,
-streaming/credit/history, all six failure scenarios, and mobile overflow.
+streaming/credit/history, all six failure scenarios, Doctor, snippets/copy fallback,
+paid-generation blocking, rapid profile switches, draft preservation, and responsive layouts.
 Playwright is a verification tool, not an application dependency.
 
+Record the synthetic product walkthrough with `python scripts/record_demo.py`.
+It writes `output/phase-four/quotamesh-phase-four.webm` and uses temporary fake data only.
+Generated recordings, screenshots and verification environments are not committed.
+
 Use a task branch and Conventional Commits; see [CONTRIBUTING.md](CONTRIBUTING.md).
-See [architecture](docs/architecture.md), [phase-two plan](docs/phase-two-plan.md), [phase-three plan](docs/phase-three-plan.md), and
+See [architecture](docs/architecture.md), [phase-two plan](docs/phase-two-plan.md), [phase-three plan](docs/phase-three-plan.md), [Phase 4 implementation](docs/phase-four-plan.md), and
 [ROADMAP.md](ROADMAP.md). The [65-page product PDF](QuotaMesh_MVP_Architecture_Product_Spec_v0.3.pdf)
-is product intent; the roadmap separates delivered phases one–three from the remaining MVP/release work.
+is product intent; the roadmap separates delivered phases one–four from release and later extensions.

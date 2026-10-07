@@ -42,3 +42,20 @@ jobs:
       - run: playwright install --with-deps chromium
       - run: node --check src/quotamesh/ui/static/dashboard.js
       - run: python scripts/browser_smoke.py
+
+  clients:
+    name: Installed wheel and generated clients
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: python -m pip install build openai
+      - run: python -m build
+      - run: python -m pip install dist/*.whl
+      - run: npm install --prefix output/phase-four/node-client --no-audit --no-fund openai @ai-sdk/openai-compatible
+      - run: python scripts/integration_smoke.py
