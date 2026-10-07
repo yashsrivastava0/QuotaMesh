@@ -16,6 +16,167 @@ from quotamesh.demo import app as fake_app
 from quotamesh.demo import configure_demo
 
 
+def fresh_start(browser):
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    with TemporaryDirectory(prefix="quotamesh-onboarding-") as directory:
+        app = create_app(Path(directory))
+        app.mount("/fake", fake_app)
+        server = uvicorn.Server(
+            uvicorn.Config(app, host="127.0.0.1", port=port, access_log=False, log_level="error")
+        )
+        thread = threading.Thread(target=server.run, daemon=True)
+        thread.start()
+        for _ in range(100):
+            if server.started:
+                break
+            time.sleep(0.05)
+        assert server.started
+        page = browser.new_page()
+        errors = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        try:
+            page.goto(f"http://127.0.0.1:{port}/bootstrap?token={app.state.bootstrap_token}")
+            page.wait_for_function(
+                "document.querySelector('#explain-summary').textContent.includes('save your default profile')"
+            )
+            assert page.locator("#credential-list .credential").count() == 0
+            form = page.locator("#credential-form")
+            form.locator("[name=provider_id]").select_option("custom")
+            form.locator("[name=plan_type]").select_option("FREE")
+            form.locator("[name=secret_value]").fill("fake-200")
+            form.locator("[name=base_url]").fill(f"http://127.0.0.1:{port}/fake/v1")
+            page.locator("#save-check").click()
+            page.wait_for_function(
+                "document.querySelectorAll('#doctor-results button').length === 1 && !document.querySelector('#save-check').disabled"
+            )
+            assert form.locator("[name=secret_value]").input_value() == ""
+            page.locator("#doctor-results select").select_option("fake-free")
+            page.locator("#doctor-results button").click()
+            page.locator("#policy-form button[type=submit]").click()
+            page.wait_for_function(
+                "document.querySelector('#explain-summary').textContent.includes('Saved policy: qm/default') && !document.querySelector('#policy-form button[type=submit]').disabled"
+            )
+            assert not page.locator("#policy-form [name=allow_paid]").is_checked()
+            page.locator("#test-form button[type=submit]").click()
+            page.wait_for_function(
+                "document.querySelector('#test-summary').textContent.includes('HTTP 200') && !document.querySelector('#test-form button[type=submit]').disabled"
+            )
+            assert "Hello from fake upstream" in page.locator("#test-output").inner_text()
+            assert not errors, errors
+        finally:
+            page.close()
+            server.should_exit = True
+            thread.join(timeout=10)
+
+
+def phase_four(page, app, port):
+    """New UI paths use explicit actions and keep unsaved edits intact."""
+    page.wait_for_function("document.querySelectorAll('#catalog-entries article').length === 6")
+    assert "Saved policy: qm/default" in page.locator("#explain-summary").inner_text()
+    assert "quotamesh key --data-dir" in page.locator("#integration-code").inner_text()
+    page.locator("#integration-shell").select_option("bash")
+    page.wait_for_function(
+        "document.querySelector('#integration-code').textContent.startsWith('export')"
+    )
+    page.locator("#integration-client").select_option("opencode")
+    config = json.loads(page.locator("#integration-code").inner_text())
+    assert config["provider"]["quotamesh"]["npm"] == "@ai-sdk/openai-compatible"
+    assert config["provider"]["quotamesh"]["options"]["baseURL"] == f"http://127.0.0.1:{port}/v1"
+    # Clipboard permissions are not required to select the snippet for manual copying.
+    page.evaluate(
+        "() => { navigator.clipboard.writeText = async () => { throw new Error('denied'); }; }"
+    )
+    page.locator("#copy-integration").click()
+    assert "Text selected" in page.locator("#copy-status").inner_text()
+    page.evaluate(
+        "() => { navigator.clipboard.writeText = async text => { window.copiedSnippet = text; }; }"
+    )
+    page.locator("#copy-integration").click()
+    page.wait_for_function("document.querySelector('#copy-status').textContent === 'Copied.'")
+    assert page.evaluate("window.copiedSnippet") == page.locator("#integration-code").inner_text()
+    page.locator("#doctor-credential").select_option("2")
+    page.locator("#doctor-mode").select_option("models")
+    page.locator("#doctor-form button[type=submit]").click()
+    page.wait_for_function(
+        "document.querySelector('#doctor-status').textContent.includes('listing ok') && !document.querySelector('#doctor-form button[type=submit]').disabled"
+    )
+    assert "fake-free" in page.locator("#doctor-results").inner_text()
+    targets = page.locator("#targets .target-row").count()
+    page.locator("#doctor-results button").first.click()
+    assert page.locator("#targets .target-row").count() == targets + 1
+    page.locator("#targets .target-row").last.locator("[data-field=model]").fill("unsaved-model")
+    page.locator("#refresh").click()
+    page.wait_for_function("document.querySelector('#notice').textContent.includes('Model added')")
+    assert (
+        page.locator("#targets .target-row").last.locator("[data-field=model]").input_value()
+        == "unsaved-model"
+    )
+    count = len(app.state.store.recent_attempts())
+    page.locator("#doctor-credential").select_option("3")
+    page.locator("#doctor-mode").select_option("generation")
+    page.locator("#doctor-form button[type=submit]").click()
+    assert "Authorize quota" in page.locator("#doctor-status").inner_text()
+    assert len(app.state.store.recent_attempts()) == count
+    page.locator("#doctor-consent").check()
+    page.locator("#doctor-form button[type=submit]").click()
+    page.wait_for_function(
+        "document.querySelector('#doctor-status').textContent.includes('paid blocked') && !document.querySelector('#doctor-form button[type=submit]').disabled"
+    )
+    assert len(app.state.store.recent_attempts()) == count
+    page.locator("#doctor-credential").select_option("2")
+    page.locator("#doctor-consent").check()
+    page.locator("#doctor-form button[type=submit]").click()
+    page.wait_for_function(
+        "document.querySelector('#doctor-status').textContent.includes('Generation: ok') && !document.querySelector('#doctor-form button[type=submit]').disabled"
+    )
+    assert len(app.state.store.recent_attempts()) == count + 1
+    # Change profiles in one browser task so earlier refresh responses can arrive late.
+    page.evaluate("""() => {
+      const select = document.querySelector('#profile-select');
+      select.value = 'free-app'; select.dispatchEvent(new Event('change'));
+      select.value = 'paid-backup'; select.dispatchEvent(new Event('change'));
+    }""")
+    page.wait_for_function(
+        "document.querySelector('#connection-alias').textContent === 'qm/paid-backup'"
+    )
+    assert page.locator("#integration-alias").inner_text() == "qm/paid-backup"
+    assert page.locator("#profile-slug").input_value() == "paid-backup"
+    page.locator("#profile-select").select_option("default")
+    page.wait_for_function(
+        "document.querySelector('#connection-alias').textContent === 'qm/default'"
+    )
+    page.locator("#preview-env").click()
+    page.wait_for_function("document.querySelectorAll('#environment-results input').length === 5")
+    assert "OPENAI_API_KEY" in page.locator("#environment-results").inner_text()
+    assert not any(
+        secret in page.content() for secret in ("fake-200", "fake-paid", '"secret_value":')
+    )
+    # Add/Test saves first, clears the secret form, then runs listing only.
+    form = page.locator("#credential-form")
+    form.locator("[name=provider_id]").select_option("custom")
+    form.locator("[name=plan_type]").select_option("FREE")
+    form.locator("[name=secret_value]").fill("fake-200")
+    form.locator("[name=base_url]").fill(app.state.demo_base_url)
+    page.locator("#save-check").click()
+    page.wait_for_function(
+        "document.querySelectorAll('#credential-list .credential').length === 6 && document.querySelector('#doctor-status').textContent.includes('listing ok') && !document.querySelector('#save-check').disabled"
+    )
+    assert form.locator("[name=secret_value]").input_value() == ""
+    for width in (390, 768, 1440):
+        page.set_viewport_size({"width": width, "height": 900})
+        assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+    page.set_viewport_size({"width": 1280, "height": 900})
+    page.locator(".skip-link").focus()
+    assert page.locator(".skip-link").evaluate(
+        "element => element.getBoundingClientRect().top >= 0"
+    )
+    page.locator("#doctor").screenshot(
+        path=str(Path(os.environ.get("QM_SCREENSHOTS", "output/phase-four")) / "doctor.png")
+    ) if os.environ.get("QM_SCREENSHOTS") else None
+
+
 def main():
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
@@ -42,6 +203,7 @@ def main():
                 browser = playwright.chromium.launch(
                     executable_path=executable, args=["--no-sandbox"]
                 )
+                fresh_start(browser)
                 page = browser.new_page(viewport={"width": 1280, "height": 900})
                 errors = []
                 page.on("pageerror", lambda error: errors.append(str(error)))
@@ -178,6 +340,7 @@ def main():
                 page.wait_for_function(
                     "document.querySelectorAll('#credential-list .credential').length === 5"
                 )
+                phase_four(page, app, port)
                 if output := os.environ.get("QM_SCREENSHOTS"):
                     Path(output).mkdir(parents=True, exist_ok=True)
                     page.screenshot(path=str(Path(output) / "wallet-desktop.png"), full_page=True)
@@ -199,6 +362,7 @@ def main():
                             "phase_two_scenarios": 6,
                             "mobile": "passed",
                             "javascript_errors": 0,
+                            "explain_connect_doctor": "passed",
                         }
                     )
                 )

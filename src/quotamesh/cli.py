@@ -239,7 +239,7 @@ def profile_test(slug: str, port: int = typer.Option(8787, min=1, max=65535)):
 
 @app.command("env")
 def environment(
-    slug: str = "default",
+    slug: Annotated[str, typer.Argument()] = "default",
     shell: str = "powershell" if os.name == "nt" else "bash",
     port: int = typer.Option(8787, min=1, max=65535),
 ):

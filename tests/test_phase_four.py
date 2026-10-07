@@ -11,6 +11,7 @@ from test_phase_two import call, setup
 from typer.testing import CliRunner
 
 from quotamesh.activity import ActivityFeed
+from quotamesh.app import create_app
 from quotamesh.cli import app as cli
 from quotamesh.connect import integration_snippets
 from quotamesh.store import Store
@@ -26,6 +27,23 @@ async def check(client, auth, **values):
             **values,
         },
     )
+
+
+async def test_fresh_start_can_render_before_default_profile_exists(tmp_path):
+    app = create_app(
+        tmp_path,
+        httpx.MockTransport(lambda r: pytest.fail("No probe expected")),
+        allow_test_host=True,
+    )
+    auth = {"Authorization": "Bearer " + app.state.local_key}
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        data = (await client.get("/api/explain", headers=auth)).json()
+        assert data["configured"] is False and data["selected"] is None
+        snippets = (await client.get("/api/integrations", headers=auth)).json()
+        assert snippets["configured"] is False and snippets["model"] == "qm/default"
+        assert (await client.get("/api/explain?profile=missing", headers=auth)).status_code == 404
 
 
 async def test_explain_is_passive_and_matches_live_selection_and_caps(tmp_path):
@@ -129,6 +147,71 @@ async def test_doctor_bounded_body_and_network_failure(tmp_path):
             )
         )
         assert (await check(client, auth)).json()["outcome"] == "network_error"
+
+
+async def test_doctor_missing_environment_expiry_and_timeout(tmp_path, monkeypatch):
+    monkeypatch.delenv("ABSENT_DIAGNOSTIC_KEY", raising=False)
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        raise httpx.ReadTimeout("private timeout text")
+
+    app, client, auth = await setup(
+        tmp_path,
+        handler,
+        keys=[
+            {"secret_value": None, "env_name": "ABSENT_DIAGNOSTIC_KEY"},
+            {"trial_expires_at": "2020-01-01"},
+            {},
+        ],
+    )
+    async with client:
+        assert (await check(client, auth)).json()["outcome"] == "missing_secret"
+        assert (await check(client, auth, credential_id=2)).json()["outcome"] == "expired"
+        assert not calls
+        response = await check(client, auth, credential_id=3)
+        assert response.json()["outcome"] == "timeout" and "private timeout" not in response.text
+        assert not app.state.doctor_running
+
+
+async def test_diagnostic_storage_failure_keeps_sanitized_result(tmp_path, monkeypatch):
+    app, client, auth = await setup(tmp_path, lambda r: httpx.Response(200, json={"data": []}))
+
+    def failure(*args):
+        raise sqlite3.OperationalError("private database error")
+
+    monkeypatch.setattr(app.state.store, "save_check", failure)
+    async with client:
+        response = await check(client, auth)
+        assert response.status_code == 200 and response.json()["saved"] is False
+        assert response.json()["outcome"] == "listing_ok"
+        assert app.state.diagnostic_write_failures == 1
+        assert app.state.accounting_failed is False
+        assert "private database" not in response.text
+
+
+async def test_disconnect_cancels_diagnostic_operation():
+    from quotamesh.doctor import until_disconnected
+
+    started, disconnected, closed = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    class Client:
+        async def is_disconnected(self):
+            return disconnected.is_set()
+
+    async def operation():
+        try:
+            started.set()
+            await asyncio.Event().wait()
+        finally:
+            closed.set()
+
+    task = asyncio.create_task(until_disconnected(Client(), operation()))
+    await started.wait()
+    disconnected.set()
+    assert await asyncio.wait_for(task, 1) is None
+    assert closed.is_set()
 
 
 async def test_generation_requires_consent_obeys_paid_rules_and_never_falls_back(tmp_path):
@@ -322,3 +405,9 @@ def test_cli_commands_and_missing_server_have_honest_errors(tmp_path, monkeypatc
         assert name in result.stdout
     result = runner.invoke(cli, ["profile", "test", "missing"])
     assert result.exit_code == 1 and "Start QuotaMesh first" in result.stdout
+    monkeypatch.setattr(
+        "quotamesh.cli.local_api",
+        lambda *args, **kwargs: {"snippets": {"env": "client environment instructions"}},
+    )
+    result = runner.invoke(cli, ["env", "my-app"])
+    assert result.exit_code == 0 and "client environment instructions" in result.stdout

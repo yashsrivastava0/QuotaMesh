@@ -51,11 +51,14 @@ def integrations(
     if error := denied(request):
         return error
     chosen = next((p for p in request.app.state.store.profiles() if p["slug"] == profile), None)
-    if chosen is None:
+    if chosen is None and profile != "default":
         return api_error(404, "Profile not found", "profile_not_found")
     base = str(request.base_url).rstrip("/") + "/v1"
-    result = integration_snippets(base, profile, shell, chosen["name"])
-    result["enabled"] = bool(chosen["enabled"])
+    result = integration_snippets(base, profile, shell, (chosen or {}).get("name"))
+    result["enabled"] = bool(chosen and chosen["enabled"])
+    result["configured"] = chosen is not None
+    if not result["configured"]:
+        result["notice"] += " Save the default profile before sending a request."
     result["demo"] = bool(getattr(request.app.state, "demo_mode", False))
     if result["demo"]:
         directory = str(request.app.state.store.data_dir)

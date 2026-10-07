@@ -687,6 +687,12 @@ class Store:
             result.pop("revision")
             result.pop("base_url")
             result["models"] = json.loads(result.pop("models_json"))
+            result["source"] = "LOCAL"
+            result["models_source"] = (
+                "PROVIDER"
+                if result["mode"] == "models" and result["outcome"] == "listing_ok"
+                else "UNKNOWN"
+            )
             result["stale"] = (
                 now - datetime.fromisoformat(result["checked_at"])
             ).total_seconds() > 86400

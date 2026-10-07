@@ -195,7 +195,7 @@ async def run_doctor(request, values):
                                 identifier = model.get("id") if isinstance(model, dict) else None
                                 if (
                                     not isinstance(identifier, str)
-                                    or not re.fullmatch(r"[A-Za-z0-9_.:/@+\-]{1,200}", identifier)
+                                    or not re.fullmatch(r"[A-Za-z0-9_.:/@+~\-]{1,200}", identifier)
                                     or secret in identifier
                                 ):
                                     raise ValueError("Invalid model identifier")

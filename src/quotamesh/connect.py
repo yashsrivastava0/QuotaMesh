@@ -27,7 +27,7 @@ REASONS = {
 def explain(app, slug):
     snapshot = runtime_snapshot(app, slug)
     profile = snapshot["profile"]
-    if profile is None:
+    if profile is None and slug != "default":
         raise LookupError("Profile not found")
     decisions = [
         {**d, "explanation": REASONS.get(d["skip_reason"], "Eligible under the saved policy.")}
@@ -42,7 +42,7 @@ def explain(app, slug):
     listed = {d["credential_id"] for d in decisions}
     caps = {}
     for period in ("daily", "monthly"):
-        cap = profile[f"paid_{period}_cap_usd"]
+        cap = (profile or {}).get(f"paid_{period}_cap_usd")
         unknown = bool(snapshot["usage"]["unknown_" + period])
         caps[period] = {
             "cap_usd": cap,
@@ -56,6 +56,7 @@ def explain(app, slug):
         }
     return {
         "evaluated_at": snapshot["evaluated_at"],
+        "configured": profile is not None,
         "profile": profile,
         "decisions": decisions,
         "selected": next((d for d in decisions if d["eligible"]), None),
