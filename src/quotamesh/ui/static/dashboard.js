@@ -213,6 +213,9 @@ async function refresh(editPolicy = false) {
     for (const [id, label] of [['', 'Provider pool (by priority)'], ...state.credentials.filter(c => c.provider_id === provider).map(c => [c.id,c.label])]) {
       const option = node('option', label); option.value = id; pool.append(option);
     }
+    if (selected && ![...pool.options].some(option => option.value === selected)) {
+      const option = node('option', 'Unavailable key #'+selected+' — choose a replacement'); option.value = selected; pool.append(option);
+    }
     pool.value = selected;
   }
   $('#connection-alias').textContent = 'qm/'+currentSlug;
@@ -241,9 +244,6 @@ $('#credential-form').onsubmit = async event => {
       const result = await api('/api/doctor', {credential_id:Number(identifier || saved.credential_id), mode:'models'});
       $('#doctor-status').textContent = checkText(result); await refresh();
       $('#doctor').scrollIntoView({behavior:'smooth',block:'start'});
-    }
-    if (selected && ![...pool.options].some(option => option.value === selected)) {
-      const option = node('option', 'Unavailable key #'+selected+' — choose a replacement'); option.value = selected; pool.append(option);
     }
   } catch (error) { notice(error.message, true); }
   finally { delete form.dataset.busy; for (const button of form.querySelectorAll('button')) button.disabled = false; }
