@@ -51,8 +51,21 @@ schema upgrades. Expandable request traces contain metadata only. The isolated d
 real-browser checks cover the mixed wallet and named profiles alongside phase-two failures.
 See [the implementation plan](docs/phase-three-plan.md).
 
-**Two phases remain: phase four (Explain/Connect, snippets, Doctor, Access Catalog) and
-phase five (release/cross-platform QA, then separately gated post-MVP extensions).**
-The existing dry-run and synthetic demo are tested foundations for phase four, not a claim
-that its full deliverables are complete. Live provider/account checks still need authorized
-keys and models; no real quota was used in phase-three verification.
+## Phase four delivered
+
+Available Now and Explain Route share the live candidate snapshot and show saved order,
+skips, paid-cap evidence, unallocated sources and known recovery times. Connect generates
+Python/Node SDK, cURL/PowerShell, environment and OpenCode templates for the actual port
+and saved profile. Manual Doctor lists models or tests exactly one policy-eligible target,
+with explicit generation consent and durable paid accounting. Model-list observations do
+not establish remaining quota or generation permissions.
+
+Schema v4 adds sanitized checks/discovery without resetting earlier usage. Environment
+import stores references from known server-process variables as UNKNOWN by default. CLI
+utilities and bounded metadata activity are integrated. The dated Access Catalog provides
+official links only. The existing frontend includes all Phase 4 workflows, async-state
+guards, keyboard access, and responsive checks; the fake-provider demo has a recorded
+walkthrough. See [Phase 4 implementation and evidence](docs/phase-four-plan.md).
+
+**Phase five remains: release/cross-platform QA, then separately gated post-MVP extensions.**
+No real quota was used. Live provider/account readiness requires authorized keys and models.

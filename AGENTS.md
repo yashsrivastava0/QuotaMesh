@@ -2,7 +2,7 @@
 
 ## Project context
 
-QuotaMesh is a local AI API capacity gateway. The product reference is [`QuotaMesh_MVP_Architecture_Product_Spec_v0.3.pdf`](QuotaMesh_MVP_Architecture_Product_Spec_v0.3.pdf); the implementation sequence and boundaries are in [`ROADMAP.md`](ROADMAP.md). The current implementation includes Phase 1 secure pass-through, Phase 2 deterministic routing, ordered pools, scoped cooldowns, expiry, and local paid caps, and Phase 3 Capacity Wallet, named profiles, credential lifecycle and durable usage/history. Keep later phase features out of scope unless requested or a minimal prerequisite is necessary and documented.
+QuotaMesh is a local AI API capacity gateway. The product reference is [`QuotaMesh_MVP_Architecture_Product_Spec_v0.3.pdf`](QuotaMesh_MVP_Architecture_Product_Spec_v0.3.pdf); the implementation sequence and boundaries are in [`ROADMAP.md`](ROADMAP.md). The current implementation includes Phase 1 secure pass-through, Phase 2 deterministic routing, ordered pools, scoped cooldowns, expiry, and local paid caps, Phase 3 Capacity Wallet, named profiles, credential lifecycle and durable usage/history, and Phase 4 Explain/Connect, manual Doctor, integration snippets, environment references, local activity and a dated Access Catalog. Keep later phase features out of scope unless requested or a minimal prerequisite is necessary and documented.
 
 ## Start each task
 
@@ -19,6 +19,7 @@ QuotaMesh is a local AI API capacity gateway. The product reference is [`QuotaMe
 - `src/quotamesh/routes/wallet.py`, `wallet.py`, `usage.py`, and `credentials.py`: profile/credential management, grouped capacity and honest durable observations.
 - `src/quotamesh/routes/dashboard.py`: first-run bootstrap, setup UI, status, and connection management.
 - `src/quotamesh/routes/gateway.py`: authenticated Chat Completions proxy and SSE transport.
+- `src/quotamesh/connect.py`, `doctor.py`, `activity.py`, and `routes/connect.py`: shared explanation, safe connection templates, explicit bounded diagnostics, environment import and metadata notifications.
 - `src/quotamesh/security.py`: local host/origin checks and browser/bearer authorization.
 - `src/quotamesh/store.py`: SQLite schema, migrations, credentials, and metadata-only request history.
 - `src/quotamesh/config.py` and `registry/`: local paths, input validation, and dated provider endpoints.

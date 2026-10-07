@@ -1,4 +1,4 @@
-# Architecture through phase three
+# Architecture through phase four
 
 One local FastAPI/Uvicorn process owns the gateway, dashboard, shared HTTPX client, and
 SQLite store. No service dependencies or frontend build. Named project profiles contain ordered provider/model targets with optional pinned keys.
@@ -90,6 +90,40 @@ routing unless explicitly overridden. Manual token prices require provider usage
 cost. An explicit USD cost field takes precedence over local estimates. Arbitrary credits or
 undocumented cost units are not converted to dollars.
 
+## Explain/Connect and diagnostics
+
+`routing.runtime_snapshot` reads policy, targets, quota state, spend and one evaluation time.
+`connect.explain` decorates those exact candidate decisions with explanations and cap
+evidence; raw credential records never enter its public response. Recovery means the
+earliest known timed block, not guaranteed eligibility once another policy condition applies.
+
+Connection templates use the actual local origin plus `/v1` and `qm/<slug>`. Keys stay in
+client environment references. OpenCode uses the Chat Completions-compatible SDK transport.
+Discovered upstream models are suggestions only; the public models endpoint advertises
+callable profile aliases, never arbitrary discovered IDs that bypass profile policy.
+
+Doctor runs only after an authenticated action. Listing is one bounded request (10 seconds,
+1 MiB, up to 1,000 printable IDs); it follows no redirects and never falls back to generation.
+Listing-level rate limits do not create generation-model cooldowns. Explicit generation
+narrows the existing gateway pipeline to one saved target/key and one upstream attempt,
+with the same caps, state transitions and metadata accounting. Browser cancellation stops
+the diagnostic task and closes upstream work. No completion/error body enters diagnostics.
+
+Schema v4 transactionally adds the latest check per credential/mode, including timestamps,
+sanitized outcomes, latency, discovered IDs and optional request ID. Revision/endpoint guards
+prevent old checks from overwriting rotated or deleted credentials. Rotation/provider/endpoint
+changes clear discovery. Observations become visibly stale after 24 hours; they never promise quota.
+
+Environment import inspects an allowlist in the server process, returns presence and names
+only, and stores references as UNKNOWN unless a plan is explicitly supplied. No file scanning,
+provider call, target creation or paid permission accompanies import. The Access Catalog is
+dated link/notes data, independent of candidate selection and pricing.
+
+`ActivityFeed` publishes metadata only after attempt persistence. Up to 64 subscribers have
+64-item queues; overflow sends a refresh hint. SSE reconnect requests a fresh snapshot,
+disconnects clean up subscribers, and keepalives make no provider calls. Frontend refreshes
+preserve draft targets and reject stale responses after profile switches.
+
 ## Trust boundaries and limits
 
 The loopback, Host/origin, bootstrap/session, local bearer, HTTPS endpoint, redirect, bounded
@@ -99,5 +133,5 @@ raw provider keys in SQLite. No background probes, telemetry, or body logging.
 
 Only Chat Completions is supported. Custom/preset API behavior is synthetic-fixture tested;
 live account/model verification requires the user's authorized keys. See the
-[phase-three implementation plan](phase-three-plan.md) for research and assumptions, and the
+[phase-four implementation](phase-four-plan.md) for verification and assumptions, and the
 [roadmap](../ROADMAP.md) for phase boundaries.
