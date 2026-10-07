@@ -11,7 +11,9 @@ import httpx
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
+from quotamesh.activity import ActivityFeed
 from quotamesh.config import data_directory
+from quotamesh.routes.connect import router as connect_router
 from quotamesh.routes.dashboard import router as dashboard_router
 from quotamesh.routes.gateway import router as gateway_router
 from quotamesh.routes.wallet import router as wallet_router
@@ -54,9 +56,12 @@ def create_app(
     app.state.diagnostic_write_failures = 0
     app.state.degraded = {}
     app.state.accounting_failed = store.accounting_marker.exists()
+    app.state.activity = ActivityFeed()
+    app.state.doctor_running = set()
     app.middleware("http")(local_host_guard(allow_test_host=allow_test_host))
     app.mount("/static", StaticFiles(directory=str(UI / "static")), name="static")
     app.include_router(dashboard_router)
     app.include_router(gateway_router)
     app.include_router(wallet_router)
+    app.include_router(connect_router)
     return app

@@ -1,0 +1,54 @@
+# Onboarding links only. These are not routing/quota/pricing truth.
+[[entries]]
+id = "gemini"
+name = "Google Gemini"
+docs_url = "https://ai.google.dev/gemini-api/docs/openai"
+signup_url = "https://aistudio.google.com/apikey"
+access_note = "Review current free and paid access in your project. OpenAI compatibility is a separate API surface."
+compatibility = "Generic transport with tested classifier fixtures"
+last_verified = "2026-10-07"
+
+[[entries]]
+id = "groq"
+name = "Groq"
+docs_url = "https://console.groq.com/docs/openai"
+signup_url = "https://console.groq.com/keys"
+access_note = "Developer access depends on your account and project; organization ceilings may still apply."
+compatibility = "Generic transport with tested classifier fixtures"
+last_verified = "2026-10-07"
+
+[[entries]]
+id = "openai"
+name = "OpenAI"
+docs_url = "https://developers.openai.com/api/docs/"
+signup_url = "https://platform.openai.com/api-keys"
+access_note = "Review API billing and model permissions. QuotaMesh treats your declared plan separately from provider billing."
+compatibility = "Chat Completions transport with tested classifier fixtures"
+last_verified = "2026-10-07"
+
+[[entries]]
+id = "nim"
+name = "NVIDIA NIM"
+docs_url = "https://docs.api.nvidia.com/nim/reference/models-1"
+signup_url = "https://build.nvidia.com/"
+access_note = "Review current developer endpoint access and conditions before configuring a model."
+compatibility = "Generic transport with tested classifier fixtures"
+last_verified = "2026-10-07"
+
+[[entries]]
+id = "cerebras"
+name = "Cerebras"
+docs_url = "https://inference-docs.cerebras.ai/"
+signup_url = "https://cloud.cerebras.ai/"
+access_note = "Check current account access and limits; configure a Custom endpoint after reviewing the docs."
+compatibility = "Catalog link only; custom setup, no first-class support claim"
+last_verified = "2026-10-07"
+
+[[entries]]
+id = "openrouter"
+name = "OpenRouter"
+docs_url = "https://openrouter.ai/docs/"
+signup_url = "https://openrouter.ai/keys"
+access_note = "Some models may offer free access; review current model conditions and data-use notes. Use Custom setup."
+compatibility = "Catalog link only; custom setup, no first-class support claim"
+last_verified = "2026-10-07"

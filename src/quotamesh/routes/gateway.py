@@ -70,6 +70,7 @@ def first_event_is_error(event: bytes) -> bool:
 def _record_attempt(request: Request, **values: Any) -> None:
     try:
         request.app.state.store.record_attempt(**values)
+        request.app.state.activity.publish(values)
     except sqlite3.Error:
         request.app.state.diagnostic_write_failures += 1
         if values.get("paid"):
@@ -122,6 +123,10 @@ def safe_header(value):
 
 @router.post("/v1/chat/completions")
 async def chat_completions(request: Request) -> Response:
+    return await execute_chat(request)
+
+
+async def execute_chat(request: Request, *, candidate=None, request_id=None) -> Response:
     if not bearer_authorized(request):
         return api_error(401, "Invalid local gateway key", "unauthorized")
     raw_buffer = bytearray()
@@ -151,10 +156,14 @@ async def chat_completions(request: Request) -> Response:
             "not_configured" if slug == "default" else "profile_not_found",
         )
     profile_id, max_attempts = profile["id"], profile["max_attempts"]
+    if candidate is not None:
+        # Internal Doctor constraint, never accepted from public request JSON.
+        max_attempts = 1
+        decisions = [d for d in decisions if (d["position"], d["credential_id"]) == candidate]
     # Preserve the Phase 1 explicit paid-disabled error for a single paid connection.
     if decisions and all(d["skip_reason"] == "paid_blocked" for d in decisions):
         return api_error(403, "Paid or unknown-plan use is disabled", "paid_blocked")
-    request_id = uuid.uuid4().hex
+    request_id = request_id or uuid.uuid4().hex
     streamed = payload.get("stream", False)
     deadline = time.monotonic() + (
         profile["first_event_timeout_s"] if streamed else profile["nonstream_deadline_s"]
@@ -173,6 +182,7 @@ async def chat_completions(request: Request) -> Response:
                 d
                 for d in decisions
                 if d["eligible"]
+                and (candidate is None or (d["position"], d["credential_id"]) == candidate)
                 and (d["credential_id"], d["model"]) not in attempted
                 and d["position"] not in context_skip
             ),

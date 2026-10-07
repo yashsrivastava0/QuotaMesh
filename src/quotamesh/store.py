@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import secrets
 import sqlite3
@@ -46,7 +47,7 @@ class Store:
         with self.connection() as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             version = conn.execute("PRAGMA user_version").fetchone()[0]
-            if version > 3:
+            if version > 4:
                 raise RuntimeError(f"Database schema {version} is newer than this QuotaMesh build")
             if version == 0:
                 conn.executescript(
@@ -166,6 +167,17 @@ class Store:
                 for row in conn.execute("SELECT * FROM attempts ORDER BY id"):
                     record_rollup(conn, dict(row))
                 conn.execute("PRAGMA user_version=3")
+            if version < 4:
+                if not conn.in_transaction:
+                    conn.execute("BEGIN")
+                conn.execute("""CREATE TABLE credential_checks (
+                    credential_id INTEGER NOT NULL REFERENCES credentials(id),
+                    revision TEXT NOT NULL, base_url TEXT NOT NULL, checked_at TEXT NOT NULL,
+                    mode TEXT NOT NULL, outcome TEXT NOT NULL, http_status INTEGER,
+                    latency_ms INTEGER, models_json TEXT NOT NULL DEFAULT '[]',
+                    request_id TEXT, PRIMARY KEY(credential_id,mode)
+                )""")
+                conn.execute("PRAGMA user_version=4")
         if os.name != "nt":
             self.path.chmod(0o600)
 
@@ -602,6 +614,15 @@ class Store:
                     status_reason=None,
                 )
             values["updated_at"] = utc_now()
+            if (
+                secret
+                or env
+                or any(
+                    values.get(field, row[field]) != row[field]
+                    for field in ("base_url", "provider_id")
+                )
+            ):
+                conn.execute("DELETE FROM credential_checks WHERE credential_id=?", (identifier,))
             conn.execute(
                 "UPDATE credentials SET " + ",".join(k + "=?" for k in values) + " WHERE id=?",
                 [*values.values(), identifier],
@@ -623,6 +644,54 @@ class Store:
                 (utc_now(), identifier),
             )
             conn.execute("DELETE FROM secrets WHERE credential_id=?", (identifier,))
+            conn.execute("DELETE FROM credential_checks WHERE credential_id=?", (identifier,))
+
+    def save_check(self, credential, result):
+        """A late probe cannot overwrite a rotated/deleted credential's diagnostics."""
+        with self.connection() as conn:
+            row = conn.execute(
+                "SELECT fingerprint,base_url FROM credentials WHERE id=? AND deleted_at IS NULL",
+                (credential["id"],),
+            ).fetchone()
+            if (
+                not row
+                or row["fingerprint"] != credential["fingerprint"]
+                or (row["base_url"] != credential["base_url"])
+            ):
+                return False
+            conn.execute(
+                """INSERT OR REPLACE INTO credential_checks VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    credential["id"],
+                    credential["fingerprint"],
+                    credential["base_url"],
+                    result["checked_at"],
+                    result["mode"],
+                    result["outcome"],
+                    result.get("http_status"),
+                    result.get("latency_ms"),
+                    json.dumps(result.get("models", [])),
+                    result.get("request_id"),
+                ),
+            )
+            return True
+
+    def checks(self, now):
+        with self.connection() as conn:
+            rows = conn.execute("""SELECT d.* FROM credential_checks d JOIN credentials c
+                ON c.id=d.credential_id WHERE c.deleted_at IS NULL
+                AND c.fingerprint=d.revision AND c.base_url=d.base_url""").fetchall()
+        results = []
+        for row in rows:
+            result = dict(row)
+            result.pop("revision")
+            result.pop("base_url")
+            result["models"] = json.loads(result.pop("models_json"))
+            result["stale"] = (
+                now - datetime.fromisoformat(result["checked_at"])
+            ).total_seconds() > 86400
+            results.append(result)
+        return results
 
     def prune_history(self, now, max_rows=50000, days=30):
         with self.connection() as conn:

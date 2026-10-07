@@ -12,6 +12,26 @@ from fastapi.responses import JSONResponse, StreamingResponse
 app = FastAPI(title="QuotaMesh fake upstream")
 
 
+@app.get("/v1/models")
+async def models(request: Request):
+    key = request.headers.get("authorization", "").removeprefix("Bearer ")
+    if key == "fake-401":
+        return JSONResponse({"error": {"message": "invalid api key"}}, status_code=401)
+    if key == "fake-models-unsupported":
+        return JSONResponse({"error": {"message": "not supported"}}, status_code=404)
+    if key == "fake-models-malformed":
+        return {"unexpected": True}
+    if key == "fake-models-timeout":
+        await asyncio.sleep(11)
+    if key == "fake-models-redirect":
+        return JSONResponse({}, status_code=302, headers={"Location": "https://example.com"})
+    if not key.startswith("fake-"):
+        return JSONResponse({"error": {"message": "invalid api key"}}, status_code=401)
+    return {"object": "list", "data": [
+        {"id": model, "object": "model"} for model in ("fake-free", "demo-billable")
+    ]}
+
+
 @app.post("/v1/chat/completions")
 async def chat(request: Request):
     key = request.headers.get("authorization", "").removeprefix("Bearer ")
@@ -140,6 +160,7 @@ def configure_demo(server, base_url, scenario="fallback"):
         conn.execute("DELETE FROM profile_targets")
         conn.execute("DELETE FROM project_profiles")
         conn.execute("DELETE FROM usage_rollups")
+        conn.execute("DELETE FROM credential_checks")
         conn.execute("DELETE FROM credentials")
         conn.execute("DELETE FROM quota_state")
         conn.execute("DELETE FROM daily_usage")
@@ -191,7 +212,7 @@ def configure_demo(server, base_url, scenario="fallback"):
             },
             {
                 "provider_id": "custom",
-                "model": "fake-paid",
+                "model": "demo-billable",
                 "credential_id": 3,
                 "input_price": 1,
                 "output_price": 1,
@@ -231,7 +252,7 @@ def configure_demo(server, base_url, scenario="fallback"):
         }
         paid_target = {
             "provider_id": "custom",
-            "model": "fake-paid",
+            "model": "demo-billable",
             "credential_id": 3,
             "input_price": 1,
             "output_price": 1,
