@@ -186,10 +186,10 @@ From a development checkout with the dev dependencies installed:
 ```sh
 python -m pytest -p no:cacheprovider -q
 ruff check .
-node --check src/quotamesh/ui/static/dashboard.js
+python scripts/check_javascript.py
 uv build
 python scripts/release_smoke.py --wheel dist/quotamesh-0.1.0-py3-none-any.whl
-python scripts/browser_smoke.py
+python scripts/browser_smoke.py --screenshots output/frontend-browser
 python scripts/integration_smoke.py
 python scripts/record_demo.py
 ```
@@ -199,6 +199,11 @@ on Unix it is `.venv/bin/python`. Browser checks require Playwright and Chromium
 Set `CHROMIUM_PATH` to an installed Chromium if needed. SDK verification requires
 Python `openai` plus Node `openai` and `@ai-sdk/openai-compatible`; these are test
 tools, not gateway runtime dependencies. See README for their installation.
+
+The separate task pages, user stories, navigation, draft behavior, and sixteen
+synthetic datasets are mapped in [frontend experience](frontend-experience.md).
+Its browser matrix includes loading failures, retry, malformed responses, session
+expiry, and large/Unicode data. Reports and screenshots are ignored local artifacts.
 
 The release smoke check launches real installed/uvx processes with temporary data,
 checks two keys on one provider, fallback, streaming, restart, privacy, and the

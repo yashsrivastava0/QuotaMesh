@@ -1,0 +1,6 @@
+<section class="card demo-banner">
+  <div><div class="eyebrow">NO PROVIDER KEY REQUIRED</div><h2>Try a safe scenario</h2><p>Temporary data, synthetic keys, and a loopback fake provider. Scenario resets affect only this isolated demo.</p></div>
+  <form id="demo-form"><label>Scenario<select name="scenario">{% for id, title in demo_scenarios %}<option value="{{ id }}" {% if id == demo_scenario %}selected{% endif %}>{{ title }}</option>{% endfor %}</select></label><button type="submit">Load scenario</button></form>
+  <div id="demo-instructions" class="scenario-guide" role="status"></div>
+</section>
+<script type="application/json" id="demo-guides">{{ demo_guides|tojson }}</script>

@@ -25,9 +25,11 @@ SQLite store. No service dependencies or frontend build. Named project profiles 
   attempts into per-day/profile/key/provider/model/plan rollups with cost evidence counts.
 - `store.py` owns short SQLite transactions, versioned additive migration, write-only
   secrets, metadata attempts, persistent quota state, and durable daily paid spend.
-- `ui/` renders a route lab with small local JavaScript; no third-party assets or direct
-  provider calls. The home wallet leads with owned capacity; named profile controls share
-  the selector. Test response text is transient browser output, not database history.
+- `ui/` renders nine task pages with shared helpers and a current-page JavaScript module;
+  no third-party assets or direct provider calls. The home wallet leads with owned
+  capacity; profile context follows navigation. Independent panel reads provide retry
+  and stale feedback, and draft navigation is guarded. Content-digest asset URLs avoid
+  stale scripts. Test response text is transient browser output, not database history.
 - `demo.py` supplies synthetic error/response scenarios. The CLI's demo uses a temporary
   store and mounted loopback fake upstream; scenario resets cannot touch normal user data.
 

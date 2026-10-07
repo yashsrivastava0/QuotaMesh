@@ -1,14 +1,17 @@
-"""Optional real-browser acceptance. Run with playwright installed and Chromium available."""
+"""Isolated, provider-free browser journeys, layout checks, and failure injection."""
 
+import argparse
 import json
 import os
 import socket
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import uvicorn
+from playwright.sync_api import Error as BrowserError
 from playwright.sync_api import sync_playwright
 
 from quotamesh.app import create_app
@@ -16,360 +19,360 @@ from quotamesh.demo import app as fake_app
 from quotamesh.demo import configure_demo
 
 
-def fresh_start(browser):
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        port = probe.getsockname()[1]
-    with TemporaryDirectory(prefix="quotamesh-onboarding-") as directory:
-        app = create_app(Path(directory))
-        app.mount("/fake", fake_app)
-        server = uvicorn.Server(
-            uvicorn.Config(app, host="127.0.0.1", port=port, access_log=False, log_level="error")
-        )
-        thread = threading.Thread(target=server.run, daemon=True)
-        thread.start()
-        for _ in range(100):
-            if server.started:
-                break
-            time.sleep(0.05)
-        assert server.started
-        page = browser.new_page()
-        errors = []
-        page.on("pageerror", lambda error: errors.append(str(error)))
-        try:
-            page.goto(f"http://127.0.0.1:{port}/bootstrap?token={app.state.bootstrap_token}")
-            page.wait_for_function(
-                "document.querySelector('#explain-summary').textContent.includes('save your default profile')"
-            )
-            assert page.locator("#credential-list .credential").count() == 0
-            form = page.locator("#credential-form")
-            form.locator("[name=provider_id]").select_option("custom")
-            form.locator("[name=plan_type]").select_option("FREE")
-            form.locator("[name=secret_value]").fill("fake-200")
-            form.locator("[name=base_url]").fill(f"http://127.0.0.1:{port}/fake/v1")
-            page.locator("#save-check").click()
-            page.wait_for_function(
-                "document.querySelectorAll('#doctor-results button').length === 1 && !document.querySelector('#save-check').disabled"
-            )
-            assert form.locator("[name=secret_value]").input_value() == ""
-            page.locator("#setup-model").fill("fake-free")
-            page.locator("#setup-form button[type=submit]").click()
-            page.wait_for_function(
-                "document.querySelector('#explain-summary').textContent.includes('Saved policy: qm/default') && !document.querySelector('#policy-form button[type=submit]').disabled"
-            )
-            assert not page.locator("#policy-form [name=allow_paid]").is_checked()
-            page.locator("#test-form button[type=submit]").click()
-            page.wait_for_function(
-                "document.querySelector('#test-summary').textContent.includes('HTTP 200') && !document.querySelector('#test-form button[type=submit]').disabled"
-            )
-            assert "Hello from fake upstream" in page.locator("#test-output").inner_text()
-            assert not errors, errors
-        finally:
-            page.close()
-            server.should_exit = True
-            thread.join(timeout=10)
-
-
-def phase_four(page, app, port):
-    """New UI paths use explicit actions and keep unsaved edits intact."""
-    page.wait_for_function("document.querySelectorAll('#catalog-entries article').length === 9")
-    assert "Saved policy: qm/default" in page.locator("#explain-summary").inner_text()
-    assert "quotamesh key --data-dir" in page.locator("#integration-code").inner_text()
-    page.locator("#integration-shell").select_option("bash")
-    page.wait_for_function(
-        "document.querySelector('#integration-code').textContent.startsWith('export')"
-    )
-    page.locator("#integration-client").select_option("opencode")
-    config = json.loads(page.locator("#integration-code").inner_text())
-    assert config["provider"]["quotamesh"]["npm"] == "@ai-sdk/openai-compatible"
-    assert config["provider"]["quotamesh"]["options"]["baseURL"] == f"http://127.0.0.1:{port}/v1"
-    # Clipboard permissions are not required to select the snippet for manual copying.
-    page.evaluate(
-        "() => { navigator.clipboard.writeText = async () => { throw new Error('denied'); }; }"
-    )
-    page.locator("#copy-integration").click()
-    assert "Text selected" in page.locator("#copy-status").inner_text()
-    page.evaluate(
-        "() => { navigator.clipboard.writeText = async text => { window.copiedSnippet = text; }; }"
-    )
-    page.locator("#copy-integration").click()
-    page.wait_for_function("document.querySelector('#copy-status').textContent === 'Copied.'")
-    assert page.evaluate("window.copiedSnippet") == page.locator("#integration-code").inner_text()
-    page.locator("#doctor-credential").select_option("2")
-    page.locator("#doctor-mode").select_option("models")
-    page.locator("#doctor-form button[type=submit]").click()
-    page.wait_for_function(
-        "document.querySelector('#doctor-status').textContent.includes('listing ok') && !document.querySelector('#doctor-form button[type=submit]').disabled"
-    )
-    assert "fake-free" in page.locator("#doctor-results").inner_text()
-    targets = page.locator("#targets .target-row").count()
-    page.locator("#doctor-results button").first.click()
-    assert page.locator("#targets .target-row").count() == targets + 1
-    page.locator("#targets .target-row").last.locator("[data-field=model]").fill("unsaved-model")
-    page.locator("#refresh").click()
-    page.wait_for_function("document.querySelector('#notice').textContent.includes('Model added')")
-    assert (
-        page.locator("#targets .target-row").last.locator("[data-field=model]").input_value()
-        == "unsaved-model"
-    )
-    count = len(app.state.store.recent_attempts())
-    page.locator("#doctor-credential").select_option("3")
-    page.locator("#doctor-mode").select_option("generation")
-    page.locator("#doctor-form button[type=submit]").click()
-    assert "Authorize quota" in page.locator("#doctor-status").inner_text()
-    assert len(app.state.store.recent_attempts()) == count
-    page.locator("#doctor-consent").check()
-    page.locator("#doctor-form button[type=submit]").click()
-    page.wait_for_function(
-        "document.querySelector('#doctor-status').textContent.includes('paid blocked') && !document.querySelector('#doctor-form button[type=submit]').disabled"
-    )
-    assert len(app.state.store.recent_attempts()) == count
-    page.locator("#doctor-credential").select_option("2")
-    page.locator("#doctor-consent").check()
-    page.locator("#doctor-form button[type=submit]").click()
-    page.wait_for_function(
-        "document.querySelector('#doctor-status').textContent.includes('Generation: ok') && !document.querySelector('#doctor-form button[type=submit]').disabled"
-    )
-    assert len(app.state.store.recent_attempts()) == count + 1
-    # Change profiles in one browser task so earlier refresh responses can arrive late.
-    page.evaluate("""() => {
-      const select = document.querySelector('#profile-select');
-      select.value = 'free-app'; select.dispatchEvent(new Event('change'));
-      select.value = 'paid-backup'; select.dispatchEvent(new Event('change'));
-    }""")
-    page.wait_for_function(
-        "document.querySelector('#connection-alias').textContent === 'qm/paid-backup'"
-    )
-    assert page.locator("#integration-alias").inner_text() == "qm/paid-backup"
-    assert page.locator("#profile-slug").input_value() == "paid-backup"
-    page.locator("#profile-select").select_option("default")
-    page.wait_for_function(
-        "document.querySelector('#connection-alias').textContent === 'qm/default'"
-    )
-    page.locator("#preview-env").click()
-    page.wait_for_function("document.querySelectorAll('#environment-results input').length === 5")
-    assert "OPENAI_API_KEY" in page.locator("#environment-results").inner_text()
-    assert not any(
-        secret in page.content() for secret in ("fake-200", "fake-paid", '"secret_value":')
-    )
-    # Add/Test saves first, clears the secret form, then runs listing only.
-    form = page.locator("#credential-form")
-    form.locator("[name=provider_id]").select_option("custom")
-    form.locator("[name=plan_type]").select_option("FREE")
-    form.locator("[name=secret_value]").fill("fake-200")
-    form.locator("[name=base_url]").fill(app.state.demo_base_url)
-    page.locator("#save-check").click()
-    page.wait_for_function(
-        "document.querySelectorAll('#credential-list .credential').length === 6 && document.querySelector('#doctor-status').textContent.includes('listing ok') && !document.querySelector('#save-check').disabled"
-    )
-    assert form.locator("[name=secret_value]").input_value() == ""
-    for width in (390, 768, 1440):
-        page.set_viewport_size({"width": width, "height": 900})
-        assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
-    page.set_viewport_size({"width": 1280, "height": 900})
-    page.locator(".skip-link").focus()
-    assert page.locator(".skip-link").evaluate(
-        "element => element.getBoundingClientRect().top >= 0"
-    )
-    page.locator("#doctor").screenshot(
-        path=str(Path(os.environ.get("QM_SCREENSHOTS", "output/phase-four")) / "doctor.png")
-    ) if os.environ.get("QM_SCREENSHOTS") else None
-
-
-def main():
+@contextmanager
+def local_server(demo):
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
     with TemporaryDirectory(prefix="quotamesh-browser-") as directory:
         app = create_app(Path(directory))
-        app.state.demo_mode = True
-        app.state.demo_base_url = f"http://127.0.0.1:{port}/demo-upstream/v1"
-        configure_demo(app, app.state.demo_base_url, "wallet")
-        app.mount("/demo-upstream", fake_app)
+        origin = f"http://127.0.0.1:{port}"
+        app.mount("/fake", fake_app)
+        if demo:
+            app.state.demo_mode = True
+            app.state.demo_base_url = origin + "/fake/v1"
+            configure_demo(app, app.state.demo_base_url, "wallet")
         server = uvicorn.Server(
             uvicorn.Config(app, host="127.0.0.1", port=port, access_log=False, log_level="error")
         )
         thread = threading.Thread(target=server.run, daemon=True)
         thread.start()
-        for _ in range(100):
-            if server.started:
-                break
-            time.sleep(0.05)
-        assert server.started
         try:
-            with sync_playwright() as playwright:
-                executable = os.environ.get("CHROMIUM_PATH")
-                browser = playwright.chromium.launch(
-                    executable_path=executable, args=["--no-sandbox"]
-                )
-                fresh_start(browser)
-                page = browser.new_page(viewport={"width": 1280, "height": 900})
-                errors = []
-                page.on("pageerror", lambda error: errors.append(str(error)))
-                page.goto(f"http://127.0.0.1:{port}/bootstrap?token={app.state.bootstrap_token}")
-                page.wait_for_function(
-                    "document.querySelectorAll('#credential-list .credential').length === 5"
-                )
-                assert page.locator("#credential-list .credential").count() == 5
-                assert page.locator(".wallet-bucket").count() == 3
-                assert page.locator(".trial_credit .capacity-source").count() == 1
-                assert "2 key(s)" in page.locator(".trial_credit").inner_text()
-                page.locator(".trial_credit .capacity-evidence").evaluate_all("elements => elements.forEach(el => el.open = true)")
-                assert "Not reported [UNKNOWN]" in page.locator(".trial_credit").inner_text()
-                assert not any(
-                    secret in page.content() for secret in ("fake-429-short", '"secret_value":')
-                )
-                page.locator("#profile-select").select_option("paid-backup")
-                page.wait_for_function(
-                    "document.querySelector('#connection-alias').textContent === 'qm/paid-backup'"
-                )
-                page.locator("#test-form [name=stream]").check()
-                page.locator("#test-form button[type=submit]").click()
-                page.wait_for_function(
-                    "document.querySelector('#test-summary').textContent.includes('HTTP 200') && !document.querySelector('#test-form button[type=submit]').disabled"
-                )
-                assert "Hello from fake upstream" in page.locator("#test-output").inner_text()
-                assert "$19.4000" in page.locator(".trial_credit").inner_text()
-                page.locator("#request-history .request-trace").first.locator("summary").click()
-                assert "Hackathon trial" in page.locator("#request-history").inner_text()
-                assert "[PROVIDER]" in page.locator("#request-history").inner_text()
-                page.locator("#history-filter").select_option("selected")
-                page.locator("#new-profile").click()
-                page.locator("#profile-name").fill("Browser app")
-                page.locator("#profile-slug").fill("browser-app")
-                page.locator("#profile-template").select_option("free-trial")
-                page.locator("#policy-form button[type=submit]").click()
-                page.wait_for_function(
-                    "document.querySelector('#connection-alias').textContent === 'qm/browser-app'"
-                )
-                assert page.locator("#profile-slug").get_attribute("readonly") is not None
-                assert not page.locator("#policy-form [name=allow_paid]").is_checked()
-                # Edit label, preserving the write-only key; then rotate to another fake secret.
-                card = page.locator("#credential-list .credential").nth(3)
-                card.get_by_role("button", name="Edit / rotate").click()
-                assert page.locator("#credential-form [name=secret_value]").input_value() == ""
-                page.locator("#credential-form [name=label]").fill("Rotated trial")
-                page.locator("#credential-form button[type=submit]").click()
-                page.wait_for_function(
-                    "document.querySelector('#credential-list').textContent.includes('Rotated trial')"
-                )
-                page.locator("#credential-list .credential").nth(3).get_by_role(
-                    "button", name="Edit / rotate"
-                ).click()
-                page.locator("#credential-form [name=secret_value]").fill("fake-200")
-                page.locator("#credential-form button[type=submit]").click()
-                page.wait_for_function("document.querySelector('#cancel-edit').hidden")
-                page.locator("#test-form button[type=submit]").click()
-                page.wait_for_function(
-                    "document.querySelector('#test-summary').textContent.includes('HTTP 200') && !document.querySelector('#test-form button[type=submit]').disabled"
-                )
-                assert "Hello from fake upstream" in page.locator("#test-output").inner_text()
-                page.locator(".trial_credit .capacity-evidence").evaluate_all("elements => elements.forEach(el => el.open = true)")
-                assert (
-                    "Locally estimated USD: $0.0000 [LOCAL]"
-                    in page.locator(".trial_credit").inner_text()
-                )  # Provider cost is not invented; token-based estimation is local.
-                # Scope-specific history refresh and disabling the profile.
-                page.locator("#policy-form [name=enabled]").uncheck()
-                page.locator("#policy-form button[type=submit]").click()
-                page.wait_for_function(
-                    "[...document.querySelectorAll('.decision-badge')].every(e => e.textContent === 'SKIP')"
-                )
-                page.locator("#test-form button[type=submit]").click()
-                page.wait_for_function(
-                    "document.querySelector('#test-summary').textContent.includes('HTTP 503') && !document.querySelector('#test-form button[type=submit]').disabled"
-                )
-                page.locator("#delete-profile").click()
-                page.locator("#delete-profile").click()
-                page.wait_for_function(
-                    "document.querySelector('#connection-alias').textContent === 'qm/default'"
-                )
-                # Exercise every Phase 2 failure demo through the UI.
-                for scenario, streamed, status, attempts in [
-                    ("fallback", False, 200, 2),
-                    ("paid-guard", False, 429, 2),
-                    ("paid-cap", False, 200, 3),
-                    ("shared-quota", False, 429, 1),
-                    ("error-first", True, 200, 2),
-                    ("midstream", True, 200, 1),
-                ]:
-                    page.locator("#demo-form [name=scenario]").select_option(scenario)
-                    page.locator("#demo-form button").click()
-                    page.wait_for_function(
-                        "document.querySelector('#test-summary').textContent === 'No test sent in this scenario yet.'"
-                    )
-                    page.locator("#test-form [name=stream]").set_checked(streamed)
-                    page.locator("#test-form button[type=submit]").click()
-                    page.wait_for_function(
-                        "!document.querySelector('#test-form button[type=submit]').disabled"
-                    )
-                    summary = page.locator("#test-summary").inner_text()
-                    assert (
-                        f"HTTP {status}" in summary and f"{attempts} upstream attempt" in summary
-                    ), (scenario, summary)
-                    if scenario == "midstream":
-                        assert "Stream error" in page.locator("#test-output").inner_text()
-                # Add access without a model/label, edit text safely, and delete an unpinned key.
-                page.locator("#credential-form [name=provider_id]").select_option("custom")
-                page.locator("#credential-form [name=plan_type]").select_option("TRIAL_CREDIT")
-                page.locator("#credential-form [name=secret_value]").fill("fake-200")
-                page.locator("#credential-form [name=base_url]").fill(app.state.demo_base_url)
-                page.locator("#credential-form button[type=submit]").click()
-                page.wait_for_function(
-                    "document.querySelectorAll('#credential-list .credential').length === 4"
-                )
-                page.locator("#credential-list .credential").last.get_by_role(
-                    "button", name="Edit / rotate"
-                ).click()
-                page.locator("#credential-form [name=label]").fill(
-                    "Browser access <img src=x onerror=alert(1)>"
-                )
-                page.locator("#credential-form button[type=submit]").click()
-                page.wait_for_function(
-                    "document.querySelector('#credential-list').textContent.includes('Browser access <img')"
-                )
-                assert page.locator("img").count() == 0
-                last = page.locator("#credential-list .credential").last
-                last.get_by_role("button", name="Delete", exact=True).click()
-                last.get_by_role("button", name="Confirm deletion").click()
-                page.wait_for_function(
-                    "document.querySelectorAll('#credential-list .credential').length === 3"
-                )
-                # Mobile layout remains within viewport; save optional review screenshots.
-                page.locator("#demo-form [name=scenario]").select_option("wallet")
-                page.locator("#demo-form button").click()
-                page.wait_for_function(
-                    "document.querySelectorAll('#credential-list .credential').length === 5"
-                )
-                phase_four(page, app, port)
-                if output := os.environ.get("QM_SCREENSHOTS"):
-                    Path(output).mkdir(parents=True, exist_ok=True)
-                    page.screenshot(path=str(Path(output) / "wallet-desktop.png"), full_page=True)
-                page.set_viewport_size({"width": 390, "height": 844})
-                assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
-                if output:
-                    page.screenshot(path=str(Path(output) / "wallet-mobile.png"), full_page=True)
-                assert not errors, errors
-                browser.close()
-                print(
-                    json.dumps(
-                        {
-                            "browser": "Chromium",
-                            "wallet": "passed",
-                            "profile_crud": "passed",
-                            "secret_rotation": "passed",
-                            "stream_and_credit": "passed",
-                            "history": "passed",
-                            "phase_two_scenarios": 6,
-                            "mobile": "passed",
-                            "javascript_errors": 0,
-                            "explain_connect_doctor": "passed",
-                        }
-                    )
-                )
+            for _ in range(100):
+                if server.started:
+                    break
+                time.sleep(0.05)
+            assert server.started, "Local test server did not start"
+            yield app, origin
         finally:
             server.should_exit = True
             thread.join(timeout=10)
+
+
+def ready(page):
+    page.wait_for_function(
+        "!document.querySelector('#page-load-status').textContent.includes('Loading') && !document.querySelector('[aria-busy=true]')"
+    )
+
+
+def go(page, origin, path, profile="default"):
+    page.goto(f"{origin}{path}?profile={profile}")
+    ready(page)
+
+
+def send(page):
+    page.locator("#test-form button[type=submit]").click()
+    page.wait_for_function(
+        "!document.querySelector('#test-form button[type=submit]').disabled && document.querySelector('#test-summary').textContent.includes('HTTP')"
+    )
+    return page.locator("#test-summary").inner_text()
+
+
+def load(page, origin, scenario):
+    go(page, origin, "/route")
+    page.locator("#demo-form [name=scenario]").select_option(scenario)
+    page.locator("#demo-form button").click()
+    page.wait_for_url("**/route?profile=default&scenario=*")
+    ready(page)
+    assert page.locator("#demo-instructions").inner_text()
+
+
+def onboarding(context):
+    with local_server(False) as (app, origin):
+        page = context.new_page()
+        page.goto(f"{origin}/bootstrap?token={app.state.bootstrap_token}")
+        ready(page)
+        assert "Start with API access" in page.locator("#journey-status").inner_text()
+        go(page, origin, "/access")
+        form = page.locator("#credential-form")
+        form.locator("[name=provider_id]").select_option("custom")
+        form.locator("[name=plan_type]").select_option("FREE")
+        form.locator("[name=secret_value]").fill("fake-200:onboarding")
+        form.locator("[name=base_url]").fill(origin + "/fake/v1")
+        page.locator("#save-check").click()
+        page.wait_for_function(
+            "document.querySelectorAll('#credential-list .credential').length === 1 && !document.querySelector('#save-check').disabled"
+        )
+        assert form.locator("[name=secret_value]").input_value() == ""
+        assert not app.state.store.recent_attempts(), "Listing must not generate"
+        page.locator("#setup-model").fill("fake-free")
+        page.locator("#setup-form button").click()
+        page.wait_for_url("**/route?profile=default")
+        ready(page)
+        assert "Next:" in page.locator("#explain-summary").inner_text()
+        assert "HTTP 200" in send(page)
+        go(page, origin, "/connect")
+        assert origin + "/v1" in page.locator("#integration-code").inner_text()
+        go(page, origin, "/activity")
+        assert page.locator(".request-trace").count() == 1
+        page.close()
+
+
+def journeys(page, app, origin, screenshots, metrics):
+    for path, name in [
+        ("/", "overview"),
+        ("/access", "access"),
+        ("/profiles", "profiles"),
+        ("/route", "route"),
+        ("/connect", "connect"),
+        ("/activity", "activity"),
+        ("/help", "help"),
+        ("/help/doctor", "doctor"),
+        ("/help/catalog", "catalog"),
+    ]:
+        requests = []
+
+        def record(request, requests=requests):
+            if "/api/" in request.url and request.method == "GET":
+                requests.append(request.url.split("/api/")[1].split("?")[0])
+
+        page.on("request", record)
+        start = time.perf_counter()
+        go(page, origin, path)
+        metrics[name] = {
+            "get_requests": requests[:],
+            "ready_ms": round((time.perf_counter() - start) * 1000),
+        }
+        page.remove_listener("request", record)
+        assert len(requests) <= 2, (path, requests)
+        assert page.locator("nav a[aria-current=page]").count() == 1
+        assert not page.locator(".panel-state.failed").count(), path
+        for width in (1440, 768, 390):
+            page.set_viewport_size({"width": width, "height": 900})
+            assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), (
+                path,
+                width,
+            )
+            if screenshots:
+                page.screenshot(path=str(screenshots / f"{name}-{width}.png"), full_page=True)
+        page.set_viewport_size({"width": 1440, "height": 900})
+        # 200% desktop zoom is represented by half the CSS viewport dimensions.
+        page.set_viewport_size({"width": 720, "height": 450})
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), path
+        page.set_viewport_size({"width": 1440, "height": 900})
+        page.locator(".skip-link").focus()
+        assert page.locator(".skip-link").evaluate("e => e.getBoundingClientRect().top >= 0")
+
+    go(page, origin, "/profiles", "paid-backup")
+    assert page.locator("#profile-slug").input_value() == "paid-backup"
+    page.locator("#new-profile").click()
+    assert page.locator("#targets .target-row").count() == 1
+    assert not page.locator("[name=allow_paid]").is_checked()
+    assert not page.locator("[name=allow_unknown_price]").is_checked()
+    assert page.locator("[name=paid_daily_cap_usd]").input_value() == ""
+    assert page.locator("[name=max_attempts]").input_value() == "5"
+    page.locator("#profile-name").fill("Browser project")
+    page.locator("#profile-slug").fill("browser-project")
+    page.locator("[data-field=model]").fill("fake-free")
+    page.locator("[data-field=credential_id]").select_option("2")
+    page.locator("nav").get_by_role("link", name="Connect", exact=True).click()
+    assert page.locator("#leave-dialog").is_visible()
+    page.locator("#leave-stay").click()
+    assert page.locator("#profile-name").input_value() == "Browser project"
+    page.locator("nav").get_by_role("link", name="Connect", exact=True).click()
+    page.locator("#leave-save").click()
+    page.wait_for_url("**/connect?profile=browser-project")
+    ready(page)
+    go(page, origin, "/connect", "browser-project")
+    assert "qm/browser-project" in page.locator("#integration-code").inner_text()
+    for client in ("python", "node", "curl", "opencode", "env"):
+        page.locator("#integration-client").select_option(client)
+        assert page.locator("#integration-code").inner_text()
+    page.locator("#copy-integration").click()
+    assert page.locator("#copy-status").inner_text() in {
+        "Copied.",
+        "Text selected. Press Ctrl+C or Command+C to copy.",
+    }
+    page.locator("#profile-select").select_option("free-app")
+    page.wait_for_url("**/connect?profile=free-app")
+    ready(page)
+    page.go_back()
+    ready(page)
+    assert "qm/browser-project" in page.locator("#integration-alias").inner_text()
+    go(page, origin, "/profiles", "browser-project")
+    page.locator("#delete-profile").click()
+    page.locator("#delete-profile").click()
+    page.wait_for_function("document.querySelector('#profile-slug').value === 'default'")
+
+    go(page, origin, "/help/doctor")
+    count = len(app.state.store.recent_attempts())
+    page.locator("#doctor-form button[type=submit]").click()
+    page.wait_for_function(
+        "document.querySelector('#doctor-status').textContent.includes('listing ok') && !document.querySelector('#doctor-form button[type=submit]').disabled"
+    )
+    assert len(app.state.store.recent_attempts()) == count
+    page.locator("#doctor-mode").select_option("generation")
+    page.locator("#doctor-credential").select_option("3")
+    page.locator("#doctor-consent").check()
+    page.locator("#doctor-form button[type=submit]").click()
+    page.wait_for_function(
+        "document.querySelector('#doctor-status').textContent.includes('paid blocked')"
+    )
+    assert len(app.state.store.recent_attempts()) == count
+
+    for scenario, status, attempts in [
+        ("fallback", 200, 2),
+        ("paid-guard", 429, 2),
+        ("paid-cap", 200, 3),
+        ("shared-quota", 429, 1),
+        ("error-first", 200, 2),
+        ("midstream", 200, 1),
+        ("success", 200, 1),
+        ("expired", 200, 1),
+        ("invalid", 200, 2),
+        ("missing-env", 200, 1),
+        ("unknown-cost", 200, 3),
+        ("accounting", 429, 2),
+    ]:
+        load(page, origin, scenario)
+        summary = send(page)
+        assert f"HTTP {status}" in summary and f"{attempts} upstream attempt" in summary, (
+            scenario,
+            summary,
+        )
+        if scenario == "midstream":
+            assert "Stream error" in page.locator("#test-output").inner_text()
+        if scenario == "unknown-cost":
+            assert (
+                "HTTP 503" in send(page) or "HTTP 429" in page.locator("#test-summary").inner_text()
+            )
+        if scenario == "paid-cap":
+            assert "HTTP 200" in send(page)
+            assert "HTTP 429" in send(page)
+
+    load(page, origin, "large")
+    go(page, origin, "/access")
+    assert page.locator("#credential-list .credential").count() == 38
+    page.set_viewport_size({"width": 390, "height": 844})
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    page.set_viewport_size({"width": 1440, "height": 900})
+    credential = page.locator("#credential-list .credential").last
+    credential.get_by_role("button", name="Edit / rotate").click()
+    page.locator("[name=label]").fill("Browser label <img src=x onerror=alert(1)>")
+    page.locator("#credential-form button[type=submit]").click()
+    page.wait_for_function(
+        "document.querySelector('#credential-list').textContent.includes('Browser label <img')"
+    )
+    assert not page.locator("img").count()
+    assert page.locator("[name=secret_value]").input_value() == ""
+    credential.get_by_role("button", name="Delete", exact=True).click()
+    credential.get_by_role("button", name="Confirm deletion").click()
+    page.wait_for_function(
+        "document.querySelectorAll('#credential-list .credential').length === 37"
+    )
+    page.locator("#preview-env").click()
+    page.wait_for_function("document.querySelectorAll('#environment-results input').length === 5")
+    assert "OPENAI_API_KEY" in page.locator("#environment-results").inner_text()
+    assert not page.evaluate("localStorage.length || sessionStorage.length")
+
+    # Simulate a failed wallet request: the route/setup panel must still render.
+    load(page, origin, "wallet")
+    page.route(
+        "**/api/wallet",
+        lambda route: route.fulfill(
+            status=503,
+            content_type="application/json",
+            body='{"error":{"message":"Synthetic wallet outage"}}',
+        ),
+    )
+    go(page, origin, "/")
+    assert "Synthetic wallet outage" in page.locator("#wallet .panel-state.failed").inner_text()
+    assert "qm/default is saved" in page.locator("#journey-status").inner_text()
+    page.unroute("**/api/wallet")
+    page.locator("#wallet").get_by_role("button", name="Retry").click()
+    page.wait_for_function("document.querySelector('#wallet').dataset.stale === 'false'")
+    assert not page.locator(".panel-state.failed:visible").count()
+    go(page, origin, "/route")
+    page.route(
+        "**/api/explain*",
+        lambda route: route.fulfill(
+            status=200, content_type="text/html", body="Malformed response"
+        ),
+    )
+    page.locator("#refresh").click()
+    page.wait_for_function("document.querySelector('#decisions').dataset.stale === 'true'")
+    assert "Local request failed" in page.locator("#decisions .panel-state.failed").inner_text()
+    assert "requests and" in page.locator("#spend-note").inner_text()
+    page.unroute("**/api/explain*")
+
+    page.goto(origin + "/#connect")
+    page.wait_for_url("**/connect?profile=default")
+    ready(page)
+    for marker in ("fake-paid", "fake-200", '"secret_value":'):
+        assert marker not in page.content()
+    page.route(
+        "**/api/integrations*",
+        lambda route: route.fulfill(
+            status=401,
+            content_type="application/json",
+            body='{"error":{"message":"Local authorization required"}}',
+        ),
+    )
+    page.reload()
+    ready(page)
+    assert "session expired" in page.locator(".panel-state.failed").inner_text()
+    page.unroute("**/api/integrations*")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--browser-executable", default=os.environ.get("CHROMIUM_PATH"))
+    parser.add_argument("--screenshots", default=os.environ.get("QM_SCREENSHOTS"))
+    args = parser.parse_args()
+    output = Path(args.screenshots) if args.screenshots else Path("output/frontend-browser")
+    output.mkdir(parents=True, exist_ok=True)
+    screenshots = output if args.screenshots else None
+    report = {"pages": {}, "checks": []}
+    with sync_playwright() as playwright:
+        try:
+            browser = playwright.chromium.launch(executable_path=args.browser_executable)
+        except BrowserError as exc:
+            raise SystemExit(
+                "Browser could not start. Run `python -m playwright install chromium`, or pass --browser-executable with the Chrome/Edge executable path.\n"
+                + str(exc).splitlines()[0]
+            ) from None
+        context = browser.new_context(viewport={"width": 1440, "height": 900})
+        errors = []
+        context.on(
+            "page", lambda page: page.on("pageerror", lambda error: errors.append(str(error)))
+        )
+        context.tracing.start(screenshots=True, snapshots=True)
+        try:
+            onboarding(context)
+            report["checks"].append(
+                "first-run setup, listing without generation, connection, and history"
+            )
+            with local_server(True) as (app, origin):
+                page = context.new_page()
+                page.goto(f"{origin}/bootstrap?token={app.state.bootstrap_token}")
+                ready(page)
+                journeys(page, app, origin, screenshots, report["pages"])
+                report["checks"].extend(
+                    [
+                        "nine pages and responsive layout",
+                        "profile CRUD, defaults, dirty Save/Stay, context and back navigation",
+                        "credential edits, deletion, privacy and environment preview",
+                        "Doctor listing and paid guard",
+                        "12 routing and streaming scenarios",
+                        "partial outage, retry, malformed response and session expiry",
+                    ]
+                )
+                page.close()
+            assert not errors, errors
+            report["javascript_errors"] = errors
+            report["result"] = "passed"
+            context.tracing.stop()
+        except Exception:
+            context.tracing.stop(path=str(output / "failure-trace.zip"))
+            if context.pages:
+                context.pages[-1].screenshot(path=str(output / "failure.png"), full_page=True)
+            report["result"] = "failed"
+            raise
+        finally:
+            (output / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+            context.close()
+            browser.close()
+    print(json.dumps(report))
 
 
 if __name__ == "__main__":

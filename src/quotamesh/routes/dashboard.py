@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import secrets
 from datetime import UTC, datetime
 from pathlib import Path
@@ -20,6 +21,7 @@ from quotamesh.routing import decision_snapshot
 from quotamesh.security import (
     api_error,
     browser_authorized,
+    configuration_error,
     management_authorized,
 )
 from quotamesh.store import DuplicateCredential
@@ -29,19 +31,74 @@ router = APIRouter()
 UI = Path(__file__).parents[1] / "ui"
 templates = Jinja2Templates(directory=str(UI / "templates"))
 
+PAGES = {
+    "/": ("overview", "Overview", "Your API access, grouped by the capacity you own."),
+    "/access": ("access", "API access", "Save a provider key or an environment reference."),
+    "/profiles": (
+        "profiles",
+        "Profiles",
+        "Choose exact models, target order, and spending rules for each app.",
+    ),
+    "/route": ("route", "Route & test", "Inspect your saved rules before sending a request."),
+    "/connect": ("connect", "Connect", "Use one local endpoint with your app’s saved profile."),
+    "/activity": (
+        "activity",
+        "Activity",
+        "Follow requests and fallback attempts. Only metadata is retained.",
+    ),
+    "/help": ("help", "How QuotaMesh works", "Understand the process and choose your next step."),
+    "/help/doctor": (
+        "doctor",
+        "Diagnostics",
+        "Run a model listing or explicitly test one saved target.",
+    ),
+    "/help/catalog": (
+        "catalog",
+        "Provider catalog",
+        "Official documentation and access links from the dated registry.",
+    ),
+}
+
+
+def asset_url(name: str) -> str:
+    digest = hashlib.sha256((UI / "static" / name).read_bytes()).hexdigest()[:12]
+    return f"/static/{name}?v={digest}"
+
 
 def _dashboard_context(request: Request, *, error: str | None = None) -> dict[str, Any]:
     store = request.app.state.store
+    slug = request.query_params.get("profile", "default")
+    page, title, description = PAGES.get(request.url.path, PAGES["/"])
     return {
-        "connection": store.connection_summary(),
-        "attempts": store.recent_attempts(),
+        "page": page,
+        "page_title": title,
+        "page_description": description,
+        "page_nav": [(path, values[1]) for path, values in PAGES.items() if path.count("/") <= 1],
+        "selected_profile": slug,
+        "profiles": store.profiles(),
+        "asset_url": asset_url,
+        "demo_scenarios": [(key, values[0]) for key, values in _demo_scenarios().items()],
+        "demo_scenario": getattr(request.app.state, "demo_scenario", "wallet"),
+        "demo_guides": _demo_guides(),
         "providers": registry(),
         "gateway_base": str(request.base_url).rstrip("/") + "/v1",
         "demo_mode": getattr(request.app.state, "demo_mode", False),
         "error": error,
-        "routing": store.safe_routing(datetime.now(UTC)),
-        "decisions": decision_snapshot(request.app)[0],
+        "routing": store.safe_routing(datetime.now(UTC), slug),
+        "decisions": decision_snapshot(request.app, slug)[0] if page == "overview" else [],
     }
+
+
+def _demo_scenarios():
+    from quotamesh.demo import SCENARIOS
+
+    return SCENARIOS
+
+
+def _demo_guides():
+    from quotamesh.demo import GUIDES
+
+    return GUIDES
 
 
 def validate_connection(payload: dict[str, Any]) -> dict[str, Any]:
@@ -134,11 +191,24 @@ def bootstrap(request: Request, token: str = "") -> Response:
 
 
 @router.get("/", response_class=HTMLResponse)
+@router.get("/access", response_class=HTMLResponse)
+@router.get("/profiles", response_class=HTMLResponse)
+@router.get("/route", response_class=HTMLResponse)
+@router.get("/connect", response_class=HTMLResponse)
+@router.get("/activity", response_class=HTMLResponse)
+@router.get("/help", response_class=HTMLResponse)
+@router.get("/help/doctor", response_class=HTMLResponse)
+@router.get("/help/catalog", response_class=HTMLResponse)
 def home(request: Request) -> Response:
     if not browser_authorized(request):
         return HTMLResponse(
             "Local dashboard locked. Open the bootstrap URL printed by `quotamesh start`.",
             status_code=401,
+        )
+    slug = request.query_params.get("profile", "default")
+    if slug != "default" and not any(p["slug"] == slug for p in request.app.state.store.profiles()):
+        return HTMLResponse(
+            'Profile not found. <a href="/profiles">Choose a saved profile</a>.', status_code=404
         )
     return templates.TemplateResponse(request, "index.html", _dashboard_context(request))
 
@@ -208,8 +278,8 @@ async def add_credential(request: Request):
         identifier = request.app.state.store.add_credential(**values)
     except DuplicateCredential as exc:
         return api_error(409, str(exc), "duplicate_credential")
-    except (ValueError, TypeError, AttributeError):
-        return api_error(400, "Invalid credential configuration", "invalid_configuration")
+    except (ValueError, TypeError, AttributeError) as exc:
+        return configuration_error(exc)
     return JSONResponse({"credential_id": identifier}, status_code=201)
 
 
@@ -322,7 +392,7 @@ async def demo_scenario(request: Request):
         configure_demo(request.app, request.app.state.demo_base_url, scenario)
     except (ValueError, TypeError, AttributeError):
         return api_error(400, "Choose a supported demo scenario", "invalid_configuration")
-    return JSONResponse({"saved": True})
+    return JSONResponse({"saved": True, "scenario": scenario})
 
 
 @router.post("/api/test")

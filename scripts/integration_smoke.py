@@ -149,6 +149,8 @@ console.log(result.content.filter(part => part.type === 'text').map(part => part
                 page = client.get(
                     "/bootstrap", params={"token": app.state.bootstrap_token}, follow_redirects=True
                 )
+                assert page.status_code == 200
+                page = client.get("/connect")
                 assert page.status_code == 200 and 'id="connect"' in page.text
                 assert "/static/dashboard.js" in page.text
                 for asset in ("dashboard.js", "style.css", "favicon.svg"):

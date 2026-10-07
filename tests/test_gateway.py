@@ -76,7 +76,7 @@ async def test_bootstrap_setup_and_nonstream_passthrough(tmp_path):
         page = (await client.get("/")).text
         assert "provider-secret-123" not in status + page
         assert "sensitive prompt" not in status + page
-        assert "http://testserver/v1" in page
+        assert "http://testserver/v1" in (await client.get("/connect")).text
         assert "model-from-upstream" in status
     with sqlite3.connect(tmp_path / "quotamesh.db") as conn:
         attempts = conn.execute(

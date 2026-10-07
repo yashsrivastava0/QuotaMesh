@@ -59,6 +59,7 @@ async def chat(request: Request):
         "fake-sse-error-first",
         "fake-midstream-cut",
         "fake-paid",
+        "fake-paid-unknown",
     }
     if key not in allowed:
         return JSONResponse({"error": {"message": "Unknown fake scenario"}}, status_code=401)
@@ -92,7 +93,9 @@ async def chat(request: Request):
                 + json.dumps(
                     {
                         "choices": [],
-                        "usage": {
+                        "usage": {}
+                        if key == "fake-paid-unknown"
+                        else {
                             "prompt_tokens": 1,
                             "completion_tokens": 4,
                             **({"cost_usd": 0.6} if key == "fake-paid" else {}),
@@ -115,7 +118,9 @@ async def chat(request: Request):
                 "finish_reason": "stop",
             }
         ],
-        "usage": {
+        "usage": {}
+        if key == "fake-paid-unknown"
+        else {
             "prompt_tokens": 1,
             "completion_tokens": 4,
             **({"cost_usd": 0.6} if key == "fake-paid" else {}),
@@ -124,6 +129,33 @@ async def chat(request: Request):
 
 
 SCENARIOS = {
+    "empty": ("First run — no API access", "fake-200", "fake-200", False, False),
+    "unconfigured": ("Access saved — no profile yet", "fake-200", "fake-200", False, False),
+    "success": ("Successful request — one target", "fake-200", "fake-200", False, False),
+    "expired": ("Expired trial — free backup", "fake-200", "fake-200", False, False),
+    "invalid": ("Rejected key — free backup", "fake-401", "fake-200", False, False),
+    "missing-env": (
+        "Missing environment reference — free backup",
+        "fake-200",
+        "fake-200",
+        False,
+        False,
+    ),
+    "unknown-cost": (
+        "Unknown paid cost — later requests blocked",
+        "fake-429-short",
+        "fake-429-short",
+        True,
+        False,
+    ),
+    "accounting": (
+        "Incomplete accounting — paid blocked",
+        "fake-429-short",
+        "fake-429-short",
+        True,
+        False,
+    ),
+    "large": ("Long labels and many sources", "fake-200", "fake-200", False, False),
     "wallet": ("Mixed wallet + named profiles", "fake-429-short", "fake-200", False, False),
     "fallback": ("Rate limit → free backup", "fake-429-short", "fake-200", False, False),
     "paid-guard": (
@@ -152,10 +184,31 @@ SCENARIOS = {
 }
 
 
+GUIDES = {
+    "wallet": "Review free, trial, and paid access. Two trial keys share one $20 balance. Choose paid-backup to observe a simulated $0.60 request.",
+    "fallback": "Send a request. The primary is rate limited; the free backup succeeds. Expect two attempts. The next request skips the cooling primary.",
+    "paid-guard": "Send a request. Both free targets fail; paid stays blocked. Expect two attempts and no paid call.",
+    "paid-cap": "Send two requests to observe $0.60 each. A third paid call is blocked by the $1 UTC daily cap. In-flight requests can overshoot the cap.",
+    "shared-quota": "Send a request. One 429 blocks the sibling key sharing its quota group/model. Expect one attempt and no independent capacity from the second key.",
+    "error-first": "Use streaming and send a request. The first provider reports an error before output starts; the backup succeeds. Expect two attempts.",
+    "midstream": "Use streaming and send a request. One provider starts output, then ends early. Expect an interruption, one attempt, and no provider switch.",
+    "empty": "No access is configured. Go to API access and add a synthetic key with the local fake endpoint, then save an exact model in a profile.",
+    "unconfigured": "Access is saved, but no profile exists. Go to API access and create a safe default with model fake-free. Setup sends no generation request.",
+    "success": "Send a request. The first free target succeeds. Expect one attempt and no fallback.",
+    "expired": "Inspect the route. The trial expired yesterday and is skipped. Send a request to observe the free backup in one attempt.",
+    "invalid": "Send a request. The primary key is rejected; the backup succeeds in two attempts. Later requests skip the rejected key until it is replaced or reset.",
+    "missing-env": "Inspect the route. The primary environment reference is absent from the server process. The free backup succeeds in one attempt.",
+    "unknown-cost": "Send a request. Paid fallback reports no usage/cost, so cost stays unknown. Send again: capped paid routing blocks because observed spend is incomplete.",
+    "accounting": "Inspect the route. Paid accounting is incomplete, so paid stays blocked. Repair storage and reconcile missing spend before using paid access.",
+    "large": "Review 38 sources with long Unicode labels at desktop and mobile sizes. The first free target succeeds in one attempt.",
+}
+
+
 def configure_demo(server, base_url, scenario="fallback"):
     if scenario not in SCENARIOS:
         raise ValueError("Unknown demo scenario")
     _, first, second, paid, shared = SCENARIOS[scenario]
+    server.state.demo_scenario = scenario
     store = server.state.store
     # Only the CLI's isolated temporary demo can call this function.
     with store.connection() as conn:
@@ -222,6 +275,40 @@ def configure_demo(server, base_url, scenario="fallback"):
             },
         ],
     )
+
+    if scenario in {"empty", "unconfigured"}:
+        with store.connection() as conn:
+            conn.execute("DELETE FROM profile_targets")
+            conn.execute("DELETE FROM project_profiles")
+            if scenario == "empty":
+                conn.execute("DELETE FROM credentials")
+    elif scenario == "expired":
+        store.edit_credential(
+            1,
+            {
+                "plan_type": "TRIAL_CREDIT",
+                "trial_expires_at": (datetime.now(UTC) - timedelta(days=1)).isoformat(),
+            },
+        )
+    elif scenario == "missing-env":
+        store.edit_credential(1, {"env_name": "QUOTAMESH_DEMO_MISSING_REFERENCE"})
+    elif scenario == "unknown-cost":
+        store.edit_credential(3, {"secret_value": "fake-paid-unknown"})
+    elif scenario == "accounting":
+        server.state.accounting_failed = True
+    elif scenario == "large":
+        for index in range(35):
+            store.add_credential(
+                provider_id="custom",
+                label=f"Demo équipe 日本語 {index + 1} — a longer project label for layout testing",
+                plan_type="FREE",
+                base_url=base_url,
+                secret_value=f"fake-200:large-{index}",
+                env_name=None,
+                quota_group=f"demo-layout-{index}",
+                priority=index,
+                trial_expires_at=None,
+            )
 
     if scenario == "wallet":
         for label in ("Hackathon trial", "Hackathon second key — shared credit"):
