@@ -8,7 +8,7 @@ Source: `QuotaMesh_MVP_Architecture_Product_Spec_v0.3.pdf` (all 65 pages reviewe
 | **2. Deterministic decision engine** | Pure candidate selector shared by traffic and dry runs; ordered target pools; quota-group/model cooldown persistence; body-aware provider classifiers; retry budget/deadlines; expiry and paid-cap enforcement; pre-commit fallback tests. | Phase 1 store, transport, fake upstream. | The spec's failure and paid-safety integration matrix passes. |
 | **3. Capacity Wallet and Project Profiles** | Full credential management; FREE/TRIAL/PAID wallet; named ordered profiles; local daily usage rollups, honest truth badges, and activity history. | Phase 2 decisions and accounting. | A mixed-capacity user can understand ownership and allocate sources to projects without reading logs. |
 | **4. Explain and connect** | Available Now/Explain Route from the same candidate function; integration snippets; on-demand Doctor; scripted demo; small dated Access Catalog. | Phase 3 profile UI; Phase 2 selector. | A user can inspect policy, understand skips, and connect a project in minutes. |
-| **5. Release and post-MVP evolution** | Packaging/release QA and cross-platform smoke checks first; then separately gated local secret polish, richer capabilities, Responses/Messages compatibility, and broader inference endpoints when justified. | MVP acceptance from Phases 1–4. | `uvx quotamesh start` and the spec's release checklist pass before optional extensions ship. |
+| **5. Final MVP release** | Complete packaging/release QA, cross-platform uvx smoke, final onboarding/observations, frontend polish, docs/media, and MIT/PyPI release. | MVP acceptance from Phases 1–4. | The complete MVP checklist and Windows/macOS/Linux release checks pass; public distribution is verified after authorized PyPI setup. |
 
 ## Why Phase 1 comes first
 
@@ -67,5 +67,5 @@ official links only. The existing frontend includes all Phase 4 workflows, async
 guards, keyboard access, and responsive checks; the fake-provider demo has a recorded
 walkthrough. See [Phase 4 implementation and evidence](docs/phase-four-plan.md).
 
-**Phase five remains: release/cross-platform QA, then separately gated post-MVP extensions.**
+**Phase five is the final MVP delivery.** See [the testing guide](docs/final-testing-guide.md) and [release evidence](docs/release-evidence.md). Deferred protocols, secret-storage extensions, and broader inference endpoints are outside this completed product scope; no Phase 6 is planned.
 No real quota was used. Live provider/account readiness requires authorized keys and models.

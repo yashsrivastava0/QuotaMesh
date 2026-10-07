@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_call:
   push:
     branches: [main]
   pull_request:
@@ -11,12 +12,16 @@ permissions:
 
 jobs:
   verify:
-    name: Python ${{ matrix.python-version }}
-    runs-on: ubuntu-latest
+    name: ${{ matrix.os }} / Python ${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12"]
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.11", "3.14"]
+        include:
+          - {os: ubuntu-latest, python-version: "3.12"}
+          - {os: ubuntu-latest, python-version: "3.13"}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -28,6 +33,10 @@ jobs:
       - run: ruff check .
       - run: pytest -q
       - run: python -m build
+      - uses: astral-sh/setup-uv@v6
+      - name: Clean uvx wheel acceptance
+        shell: bash
+        run: python scripts/release_smoke.py --wheel "$(find dist -name '*.whl' -print -quit)"
 
   browser:
     name: Browser acceptance

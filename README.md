@@ -12,16 +12,15 @@ Use the API access you already own through one local endpoint, with explicit ord
 
 </div>
 
-**Current scope: phases one through four.** QuotaMesh has an authenticated localhost
+**Current scope: finalized MVP, phases one through five (v0.1.0).** QuotaMesh has an authenticated localhost
 Chat Completions gateway, deterministic fallback, shared cooldowns, expiry and paid caps,
 a grouped FREE/TRIAL/PAID Capacity Wallet, editable credentials, named Project Profiles,
 durable local usage with expandable metadata-only history, Available Now/Explain Route,
 generated integration snippets, on-demand Doctor, environment import, and a dated Access Catalog. Existing `qm/default`
-clients keep working; each new project uses `qm/<slug>`. This is an alpha developer tool.
+clients keep working; each new project uses `qm/<slug>`. This is a local developer utility with explicit compatibility boundaries.
 
 QuotaMesh does not create capacity, bypass limits, or make paid calls free. Counts and
-balances cover traffic through this gateway; provider quota stays unknown. Phase five covers
-release/cross-platform QA and separately gated extensions. No live-provider readiness is implied.
+balances cover traffic through this gateway; provider quota stays unknown. Phase five finalizes release packaging, platform QA, documentation, and frontend polish. No live-provider readiness is implied.
 
 ## Quick start
 
@@ -63,7 +62,7 @@ explicit quota-use action and obeys the saved paid rules; it never falls back to
 key. Listing success does not prove generation permissions or remaining quota.
 
 To update an existing checkout, run `git switch main` and `git pull --ff-only` before
-installing. Back up your data directory before upgrading; schema v1/v2/v3 migrates to v4.
+installing. Back up your data directory before upgrading; schema v1/v2/v3/v4 migrates to v5.
 
 ## Test without API keys
 
@@ -272,8 +271,8 @@ Client-provided labels are not persisted. There is no telemetry or background qu
 Secrets entered directly are plaintext in local SQLite, with restrictive Unix permissions;
 Windows does not provide equivalent guarantees through POSIX mode bits. Data defaults to
 `~/.local/share/quotamesh` or `%LOCALAPPDATA%/QuotaMesh`. Set `QUOTAMESH_DATA_DIR` to isolate
-it. Schema v1/v2/v3 upgrades to v4; the v3-to-v4 addition is transactional. Back up before upgrading. Older builds
-cannot read v4. Paid cap totals survive upgrades, deletion and pruning. Retained attempts
+it. Schema v1/v2/v3/v4 upgrades to v5; additions are transactional. Back up before upgrading. Older builds
+cannot read v5. Paid cap totals survive upgrades, deletion and pruning. Retained attempts
 are backfilled once; earlier pruned detail cannot be reconstructed and coverage is labeled.
 Legacy paid costs without evidence stay unknown. Estimated remaining credit stays unknown
 for legacy stores with incomplete coverage, missing cost, or conflicting starting amounts.
@@ -308,10 +307,54 @@ paid-generation blocking, rapid profile switches, draft preservation, and respon
 Playwright is a verification tool, not an application dependency.
 
 Record the synthetic product walkthrough with `python scripts/record_demo.py`.
-It writes `output/phase-four/quotamesh-phase-four.webm` and uses temporary fake data only.
+It writes `output/phase-five/quotamesh-final.webm` and uses temporary fake data only.
 Generated recordings, screenshots and verification environments are not committed.
 
 Use a task branch and Conventional Commits; see [CONTRIBUTING.md](CONTRIBUTING.md).
 See [architecture](docs/architecture.md), [phase-two plan](docs/phase-two-plan.md), [phase-three plan](docs/phase-three-plan.md), [Phase 4 implementation](docs/phase-four-plan.md), and
 [ROADMAP.md](ROADMAP.md). The [65-page product PDF](QuotaMesh_MVP_Architecture_Product_Spec_v0.3.pdf)
 is product intent; the roadmap separates delivered phases one–four from release and later extensions.
+
+## Final release and testing
+
+Read [the complete testing guide](docs/final-testing-guide.md) for first-run setup,
+manual scenarios, expected results, upgrades, troubleshooting, and the full PDF
+checklist mapping. [Release evidence](docs/release-evidence.md) records actual
+results and publishing status. Version 0.1.0 uses the MIT license.
+
+The first-run panel creates `qm/default` from a saved key and exact model with paid
+use disabled. Choose your plan explicitly. Duplicate access for the same provider
+and endpoint is rejected; existing aliases cannot retry the same effective key/model
+or bypass its observed cooldown. One gateway may own a data directory at a time.
+
+Timing and allowlisted OpenAI/Groq rate-header evidence are passive observations,
+not live quota. Groq request headers describe a day window, token headers a minute
+window. Snapshots become stale after at most 60 seconds or their earlier reset.
+Compatibility presets now include Anthropic, xAI, OpenRouter, Cerebras, and Mistral;
+these are generic transports, not native protocol or live-account guarantees.
+
+After public PyPI publication, `uvx quotamesh start` is the one-command entry point.
+Until then, use the verified release wheel:
+
+```sh
+uvx --from ./dist/quotamesh-0.1.0-py3-none-any.whl quotamesh start
+```
+
+Release verification launches real installed processes, fake providers, two keys on
+one provider, streaming and restart without consuming quota:
+
+```sh
+python scripts/release_smoke.py --wheel dist/quotamesh-0.1.0-py3-none-any.whl
+python -m pip install openai playwright
+npm install --prefix output/phase-four/node-client --no-audit --no-fund openai @ai-sdk/openai-compatible
+python scripts/integration_smoke.py
+```
+
+SDKs and Playwright are verification dependencies only. The SDK harness's ignored
+`output/phase-four/node-client` location is retained for existing CI compatibility;
+new screenshots and recordings use `output/phase-five`. Generate the final guide PDF
+with `pip install reportlab` and `python scripts/build_testing_guide.py`.
+
+Publishing uses GitHub OIDC in `.github/workflows/release.yml`, with an explicit
+release tag and optional publish input. The authorized PyPI account must configure
+its Trusted Publisher; no publishing secret is stored in this repository.
