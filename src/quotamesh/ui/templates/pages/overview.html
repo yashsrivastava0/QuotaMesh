@@ -1,0 +1,22 @@
+<section class="metrics" aria-label="Local route summary">
+  <div><span>API credentials</span><strong id="metric-keys">{{ routing.credentials|length }}</strong><small>Access you configured</small></div>
+  <div><span>Eligible targets in this profile</span><strong id="metric-eligible">{{ decisions|selectattr('eligible')|list|length }}</strong><small>Saved rules, without a provider probe</small></div>
+  <div><span>Known observed cost today</span><strong id="metric-spend">Loading…</strong><small>UTC · through this gateway only</small></div>
+</section>
+<section id="wallet" class="block">
+  <div class="section-head"><h2>Your AI capacity</h2><span class="state">Gateway observations</span></div>
+  <p class="fine">Keys sharing a provider account/project count as one source. Remaining provider quota is unknown. Expand evidence to see where each number comes from.</p>
+  <div id="wallet-summary" class="wallet-summary"></div>
+  <div id="wallet-buckets" class="wallet-buckets"></div>
+  <p id="coverage-note" class="fine"></p>
+</section>
+<section class="card next-steps block">
+  <h2>{{ 'Next steps for this application' if routing.profile else 'Connect your first application' }}</h2>
+  <p id="journey-status">Add API access, save a profile, then connect your client.</p>
+  <ol class="steps">
+    <li><a href="/access" data-profile-link>Add API access</a><span>A provider key or environment reference.</span></li>
+    <li><a href="/profiles" data-profile-link>Save a profile</a><span>Exact models, target order, and spending rules.</span></li>
+    <li><a href="/route" data-profile-link>Inspect and test</a><span>Predict a route without a provider call; send a test when ready.</span></li>
+    <li><a href="/connect" data-profile-link>Connect your client</a><span>Use the local endpoint and your saved alias.</span></li>
+  </ol>
+</section>

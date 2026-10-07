@@ -1,0 +1,21 @@
+<section class="card">
+  <h2>What does QuotaMesh do?</h2>
+  <p>QuotaMesh sends your application's Chat Completions requests through the provider/model order saved in your profile. Your app uses one local endpoint; you decide which access it can use and whether paid fallback is allowed.</p>
+  <ol class="process">
+    <li><strong>Your client sends a request</strong><p>The local gateway checks authorization and resolves an alias such as <code>qm/default</code>.</p></li>
+    <li><strong>Your saved profile defines the order</strong><p>A target is an exact provider, model, and key or key pool. Draft edits do not affect requests until saved.</p></li>
+    <li><strong>The gateway checks eligibility</strong><p>Disabled keys, expired trials, shared cooldowns, and blocked paid access are skipped. A dry run performs these checks without contacting a provider.</p></li>
+    <li><strong>An eligible target receives your request</strong><p>Retryable failures can move to the next configured target before a response starts. After streaming starts, an interruption stays on that provider.</p></li>
+    <li><strong>You inspect the outcome</strong><p>Activity records attempt order, timing, usage, and cost evidence. Prompts and responses are never saved in history.</p></li>
+  </ol>
+  <div class="actions"><a href="/route" data-profile-link class="text-link">Inspect your saved route →</a><a href="/help/doctor" data-profile-link class="text-link">Run diagnostics →</a><a href="/help/catalog" data-profile-link class="text-link">Provider documentation →</a></div>
+</section>
+<section class="card block"><h2>What the numbers mean</h2><dl class="glossary">
+  <dt>You entered</dt><dd>Plan, expiry, starting dollar credit, grouping, and optional model prices.</dd>
+  <dt>Provider reported</dt><dd>Usage or cost returned by the provider for a request. A dated rate snapshot can become stale.</dd>
+  <dt>Gateway observed / estimated</dt><dd>Requests through this gateway and estimates based on reported tokens and your prices. Other traffic is invisible.</dd>
+  <dt>Unknown</dt><dd>No reliable evidence. Unknown quota, usage, or cost must not be treated as zero.</dd>
+  <dt>Shared quota group</dt><dd>Keys belonging to one provider account/project share limits. Adding keys does not multiply capacity.</dd>
+  <dt>Project profile</dt><dd>One app's ordered targets and permissions. Clients use its immutable <code>qm/&lt;slug&gt;</code> alias.</dd>
+</dl></section>
+<section class="card block"><h2>Privacy and practical limits</h2><p>This gateway runs on loopback in one process. Directly saved secrets are plaintext in local SQLite; environment references avoid storing a key. No telemetry or background provider checks run.</p><p>Paid and unknown-plan access require permission in the saved profile. Local caps compare observed spend before selection; requests already in flight can exceed them. They are not provider billing limits.</p><p>Chat Completions is supported. Model listing does not prove generation permissions or remaining quota. QuotaMesh does not create capacity or bypass provider limits.</p><p>If your session expires after restarting the gateway, reopen the one-time dashboard link printed by <code>quotamesh start</code>.</p></section>

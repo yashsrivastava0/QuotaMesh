@@ -23,6 +23,34 @@ REASONS = {
     "accounting_unavailable": "Paid accounting is incomplete; paid routing is blocked.",
 }
 
+RECOVERY = {
+    "no_credentials": ("add_access", "Add matching API access"),
+    "disabled": ("review_enabled", "Review enabled access and profile"),
+    "expired": ("review_expiry", "Review expiry or replace access"),
+    "invalid": ("rotate_access", "Replace the rejected key"),
+    "unusable": ("diagnose_access", "Check account access"),
+    "trial_blocked": ("review_policy", "Review trial permission"),
+    "paid_blocked": ("review_policy", "Review paid permission"),
+    "missing_secret": ("review_environment", "Set the variable and restart the gateway"),
+    "cooldown": ("wait", "Wait for the reported recovery time"),
+    "exhausted": ("wait", "Wait for the reported quota reset"),
+    "degraded": ("wait", "Wait for the temporary block to expire"),
+    "cap_reached": ("review_cap", "Review observed spend and UTC cap window"),
+    "unknown_price": ("review_prices", "Enter both current token prices"),
+    "unknown_spend": ("review_cost", "Review incomplete cost evidence"),
+    "accounting_unavailable": ("repair_accounting", "Repair storage and reconcile missing spend"),
+}
+
+
+def recovery_action(decision):
+    code, label = RECOVERY.get(decision["skip_reason"], ("inspect", "Inspect saved rules"))
+    return {
+        "code": code,
+        "label": label,
+        "credential_id": decision.get("credential_id"),
+        "position": decision.get("position"),
+    }
+
 
 def explain(app, slug):
     snapshot = runtime_snapshot(app, slug)
@@ -30,7 +58,11 @@ def explain(app, slug):
     if profile is None and slug != "default":
         raise LookupError("Profile not found")
     decisions = [
-        {**d, "explanation": REASONS.get(d["skip_reason"], "Eligible under the saved policy.")}
+        {
+            **d,
+            "explanation": REASONS.get(d["skip_reason"], "Eligible under the saved policy."),
+            "recovery_action": None if d["eligible"] else recovery_action(d),
+        }
         for d in snapshot["decisions"]
     ]
     now = datetime.fromisoformat(snapshot["evaluated_at"])

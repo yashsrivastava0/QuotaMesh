@@ -8,7 +8,7 @@ from pydantic import ValidationError
 
 from quotamesh.credentials import CredentialPatch
 from quotamesh.policy import ProjectProfile
-from quotamesh.security import api_error, management_authorized
+from quotamesh.security import api_error, configuration_error, management_authorized
 from quotamesh.usage import summarize
 from quotamesh.wallet import snapshot
 
@@ -67,8 +67,8 @@ async def save(request, slug=None):
         identifier = store.save_profile(name_slug, values, targets, name=name, create=slug is None)
     except LookupError:
         return api_error(404, "Profile not found", "profile_not_found")
-    except (ValidationError, TypeError, AttributeError):
-        return invalid()
+    except (ValidationError, TypeError, AttributeError) as exc:
+        return configuration_error(exc)
     except ValueError as exc:
         return api_error(409, str(exc), "profile_conflict")
     return JSONResponse(
@@ -114,8 +114,8 @@ async def edit_credential(identifier: int, request: Request):
     try:
         values = CredentialPatch.model_validate(await request.json()).validated(existing)
         store.edit_credential(identifier, values)
-    except (ValidationError, TypeError, AttributeError):
-        return invalid()
+    except (ValidationError, TypeError, AttributeError) as exc:
+        return configuration_error(exc)
     except LookupError:
         return api_error(404, "Credential not found", "credential_not_found")
     except ValueError as exc:
