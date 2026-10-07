@@ -11,6 +11,17 @@ let policyRefreshPending = false;
 let historyVersion = 0;
 let integrationData = null;
 let diagnosticData = [];
+let catalogPromise = null;
+const integrationCache = new Map();
+function cachedCatalog() {
+  if (!catalogPromise) catalogPromise = api('/api/catalog').catch(error => { catalogPromise = null; throw error; });
+  return catalogPromise;
+}
+function cachedIntegration(slug, shell) {
+  const key = slug+'|'+shell;
+  if (!integrationCache.has(key)) integrationCache.set(key, api('/api/integrations?profile='+encodeURIComponent(slug)+'&shell='+shell).catch(error => { integrationCache.delete(key); throw error; }));
+  return integrationCache.get(key);
+}
 let doctorController = null;
 const credentialDeleteConfirmations = new Set();
 const reasons = {
@@ -98,6 +109,30 @@ function fillPolicy() {
     else control.value = profile[control.name] ?? '';
   }
 }
+function renderSetup() {
+  const pending = currentSlug === 'default' && !state.targets.length && !creatingProfile;
+  $('#setup').hidden = !pending;
+  const chosen = $('#setup-credential').value;
+  $('#setup-credential').replaceChildren();
+  for (const credential of state.credentials) {
+    const option = node('option', credential.label+' ? '+credential.plan_type); option.value = credential.id; $('#setup-credential').append(option);
+  }
+  if ([...$('#setup-credential').options].some(o => o.value === chosen)) $('#setup-credential').value = chosen;
+  $('#setup-form button').disabled = !state.credentials.length;
+  $('#setup-models').replaceChildren();
+  for (const check of diagnosticData.filter(c => c.credential_id === Number($('#setup-credential').value))) for (const model of check.models || []) {
+    const option = node('option'); option.value = model; $('#setup-models').append(option);
+  }
+}
+$('#setup-credential').onchange = renderSetup;
+$('#setup-form').onsubmit = async event => {
+  event.preventDefault(); const button = event.currentTarget.querySelector('button'); button.disabled = true;
+  try {
+    await api('/api/setup', {credential_id: Number($('#setup-credential').value), model: $('#setup-model').value});
+    await refresh(true); notice('Default profile created. Paid use is off. Inspect Available now and Connect.'); $('#connect').scrollIntoView({behavior:'smooth'});
+  } catch (error) { $('#setup-status').textContent = error.message; }
+  finally { button.disabled = !state.credentials.length; }
+};
 function renderCredentials() {
   $('#credential-list').replaceChildren();
   if (!state.credentials.length) $('#credential-list').append(node('p', 'Start with one credential, then add a target below.', 'empty'));
@@ -169,12 +204,13 @@ function renderAttempts(attempts) {
 }
 async function refresh(editPolicy = false) {
   policyRefreshPending ||= editPolicy;
+  if (editPolicy) integrationCache.clear();
   const version = ++refreshVersion; const slug = currentSlug;
   const results = await Promise.all([
     api('/api/status?profile='+encodeURIComponent(slug)), api('/api/wallet'),
     api('/api/explain?profile='+encodeURIComponent(slug)),
-    api('/api/integrations?profile='+encodeURIComponent(slug)+'&shell='+$('#integration-shell').value),
-    api('/api/doctor'), api('/api/catalog'),
+    cachedIntegration(slug, $('#integration-shell').value),
+    api('/api/doctor'), cachedCatalog(),
   ]).catch(error => { if (version !== refreshVersion || slug !== currentSlug) return null; throw error; });
   if (!results) return;
   const [status, wallet, explanation, integrations, diagnostics, catalog] = results;
@@ -192,7 +228,7 @@ async function refresh(editPolicy = false) {
   $('#delete-profile').hidden = currentSlug === 'default' || creatingProfile;
   await loadHistory();
   if (version !== refreshVersion || slug !== currentSlug) return;
-  renderCredentials(); renderDecisions(explanation.decisions); renderAttempts(status.recent_attempts);
+  renderSetup(); renderCredentials(); renderDecisions(explanation.decisions); renderAttempts(status.recent_attempts);
   renderExplanation(explanation); renderIntegration(); renderDoctor(); renderCatalog(catalog);
   $('#metric-keys').textContent = state.credentials.length;
   $('#metric-spend').textContent = '$'+state.usage.daily.toFixed(4);
@@ -314,6 +350,7 @@ function dollars(value) { return value == null ? 'Unknown' : '$'+value.toFixed(4
 function renderWallet(wallet) {
   $('#wallet-summary').textContent = `${wallet.today.routed_requests} routed requests today · ${wallet.today.attempts} upstream attempts · ${wallet.today.failures} failed attempts [LOCAL / UTC]. Known observed cost ${dollars(wallet.today.known_cost_usd)}; ${wallet.today.unknown_cost} attempt(s) with unknown cost. Provider and local estimates are listed separately below.`;
   $('#coverage-note').textContent = 'Coverage: '+wallet.coverage+'. Daily usage survives history pruning. Local paid caps can be exceeded by requests already in flight.';
+  const expanded = new Set([...document.querySelectorAll('.capacity-evidence[open]')].map(item => item.dataset.group));
   $('#wallet-buckets').replaceChildren();
   for (const [plan, title] of [['FREE','FREE'],['TRIAL_CREDIT','TRIAL / CREDITS'],['PAID','PAID / UNKNOWN']]) {
     const section = node('section', undefined, 'wallet-bucket '+plan.toLowerCase());
@@ -324,20 +361,24 @@ function renderWallet(wallet) {
       card.append(node('strong', source.provider_id+' / '+(source.keys[0].account_label || source.group.split(':').slice(1).join(':'))));
       card.append(tagged('Access', `${source.keys.length} key(s)${source.shared ? ' · shared quota' : ''} · ${source.plan_types.join(', ')}`, 'MANUAL'));
       card.append(tagged('Routed requests / attempts today', `${source.today.routed_requests} / ${source.today.attempts}`, 'LOCAL / UTC'));
-      card.append(tagged('Lifetime observed attempts', source.usage.attempts, 'LOCAL'));
-      card.append(tagged('Last success', source.usage.last_success_at || 'Not observed', 'LOCAL'));
-      card.append(tagged('Last error', source.usage.last_error_at ? `${source.usage.last_error_at} · ${source.usage.last_error_class}` : 'Not observed', 'LOCAL'));
-      card.append(tagged('Last attempt latency', source.usage.last_latency_ms == null ? 'Unknown' : source.usage.last_latency_ms+' ms', source.usage.last_latency_ms == null ? 'UNKNOWN' : 'LOCAL'));
-      card.append(tagged('Provider-reported USD', source.usage.provider_cost_count ? dollars(source.usage.provider_cost_usd) : 'Not reported', source.usage.sources.provider_cost_usd));
-      card.append(tagged('Locally estimated USD', source.usage.estimated_cost_count ? dollars(source.usage.estimated_cost_usd) : 'Not estimated', source.usage.sources.estimated_cost_usd));
-      card.append(tagged('Unknown costs', source.usage.unknown_cost+' attempt(s)', 'UNKNOWN'));
+      const evidence = node('details', undefined, 'capacity-evidence'); evidence.dataset.group = source.group; evidence.open = expanded.has(source.group); evidence.append(node('summary','Usage, cost, and timing evidence'));
+      evidence.append(tagged('Lifetime observed attempts', source.usage.attempts, 'LOCAL'));
+      evidence.append(tagged('Last success', source.usage.last_success_at || 'Not observed', 'LOCAL'));
+      evidence.append(tagged('Last error', source.usage.last_error_at ? `${source.usage.last_error_at} · ${source.usage.last_error_class}` : 'Not observed', 'LOCAL'));
+      evidence.append(tagged('Last first-response time', source.usage.last_ttfb_ms == null ? 'Unknown' : source.usage.last_ttfb_ms+' ms', source.usage.last_ttfb_ms == null ? 'UNKNOWN' : 'LOCAL'));
+      evidence.append(tagged('Last attempt latency', source.usage.last_latency_ms == null ? 'Unknown' : source.usage.last_latency_ms+' ms', source.usage.last_latency_ms == null ? 'UNKNOWN' : 'LOCAL'));
+      evidence.append(tagged('Provider-reported USD', source.usage.provider_cost_count ? dollars(source.usage.provider_cost_usd) : 'Not reported', source.usage.sources.provider_cost_usd));
+      evidence.append(tagged('Locally estimated USD', source.usage.estimated_cost_count ? dollars(source.usage.estimated_cost_usd) : 'Not estimated', source.usage.sources.estimated_cost_usd));
+      evidence.append(tagged('Unknown costs', source.usage.unknown_cost+' attempt(s)', 'UNKNOWN'));
       const partial = source.usage.input_missing || source.usage.output_missing;
-      card.append(tagged('Observed input / output tokens', `${source.usage.input_tokens ?? 'Unknown'} / ${source.usage.output_tokens ?? 'Unknown'}${partial ? ' · incomplete' : ''}`, source.usage.sources.tokens));
+      evidence.append(tagged('Observed input / output tokens', `${source.usage.input_tokens ?? 'Unknown'} / ${source.usage.output_tokens ?? 'Unknown'}${partial ? ' · incomplete' : ''}`, source.usage.sources.tokens));
       if (plan === 'TRIAL_CREDIT' || source.starting_credit_usd != null || source.conflicting_credit) {
         card.append(tagged('Starting credit', source.conflicting_credit ? 'Conflicting amounts — edit keys to agree' : dollars(source.starting_credit_usd), source.starting_credit_usd == null ? 'UNKNOWN' : 'MANUAL'));
         card.append(tagged('Estimated remaining USD', dollars(source.estimated_remaining_usd), source.sources.estimated_remaining_usd));
       }
-      card.append(tagged('Remaining provider quota', 'Unknown', 'UNKNOWN'));
+      evidence.append(tagged('Remaining provider quota', 'Unknown', 'UNKNOWN'));
+      for (const rate of source.rate_observations || []) evidence.append(tagged(`${rate.model} / ${rate.dimension} (${rate.window})`, `${rate.remaining} reported at ${rate.observed_at}${rate.stale ? ' ? stale' : ' ? recent snapshot'}; other traffic may have consumed it`, 'PROVIDER'));
+      card.append(evidence);
       for (const key of source.keys) {
         const observed = key.usage.last_success_at ? 'success observed' : 'untested';
         card.append(tagged(key.label, `${key.enabled ? (key.expired ? 'EXPIRED' : key.status) : 'DISABLED'} · ${observed}${!key.secret_available ? ' · environment reference unavailable' : ''}`, 'LOCAL'));
@@ -358,10 +399,11 @@ async function loadHistory(append = false) {
   const cursor = append && historyCursor ? '&before='+historyCursor : '';
   const data = await api('/api/activity?limit=20'+profile+cursor);
   if (version !== historyVersion || slug !== currentSlug) return;
+  const expanded = new Set([...document.querySelectorAll('#request-history details[open]')].map(item => item.dataset.requestId));
   if (!append) $('#request-history').replaceChildren();
   if (!append && !data.requests.length) $('#request-history').append(node('p','No routed requests in this view yet.','fine'));
   for (const request of data.requests) {
-    const details = node('details', undefined, 'request-trace');
+    const details = node('details', undefined, 'request-trace'); details.dataset.requestId = request.request_id; details.open = expanded.has(request.request_id);
     details.append(node('summary', `${request.ts.slice(0,19)} UTC · qm/${request.profile_slug} · ${request.outcome} · ${request.attempt_count} attempt(s) · ${request.latency_ms} ms [LOCAL]`));
     details.append(node('p', 'Request '+request.request_id, 'fine'));
     for (const attempt of request.attempts) {
@@ -523,7 +565,7 @@ $('#preview-env').onclick = async () => {
 function renderCatalog(data) {
   $('#catalog-entries').replaceChildren();
   for (const entry of data.entries) {
-    const card = node('article',undefined,'catalog-entry'); card.append(node('h3',entry.name),node('p',entry.access_note,'fine'),node('p',`${entry.configured ? 'Configured' : 'Not configured as a preset'} · ${entry.compatibility} · verified ${entry.last_verified}`,'fine'));
+    const card = node('article',undefined,'catalog-entry'); card.append(node('h3',entry.name),node('p',entry.access_note,'fine'),node('p',`${state.credentials.some(c => c.provider_id === entry.id) ? 'Configured' : 'Not configured as a preset'} · ${entry.compatibility} · verified ${entry.last_verified}`,'fine'));
     const links = node('div',undefined,'actions');
     for (const [title,href] of [['Official docs',entry.docs_url],['Get access',entry.signup_url]]) { const link = node('a',title,'text-link'); link.href = href; link.target = '_blank'; link.rel = 'noopener noreferrer'; links.append(link); }
     const add = node('a',entry.preset ? 'Configure access' : 'Custom setup','text-link'); add.href = '#access';
