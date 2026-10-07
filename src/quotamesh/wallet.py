@@ -22,6 +22,7 @@ def snapshot(store, now):
         ]
     profiles = store.profiles()
     rows = store.usage_rows()
+    rates = store.rates(now)
     buckets = {"FREE": [], "TRIAL_CREDIT": [], "PAID": []}
     groups = {}
     for key in keys:
@@ -107,6 +108,7 @@ def snapshot(store, now):
                 "conflicting_credit": len(credits) > 1,
                 "estimated_remaining_usd": remaining,
                 "remaining_quota": None,
+                "rate_observations": [r for r in rates if r["quota_group"] == group],
                 "sources": {
                     "plan_types": "MANUAL",
                     "starting_credit_usd": "MANUAL",

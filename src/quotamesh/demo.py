@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from datetime import UTC, datetime, timedelta
 
@@ -14,7 +15,7 @@ app = FastAPI(title="QuotaMesh fake upstream")
 
 @app.get("/v1/models")
 async def models(request: Request):
-    key = request.headers.get("authorization", "").removeprefix("Bearer ")
+    key = request.headers.get("authorization", "").removeprefix("Bearer ").split(":", 1)[0]
     if key == "fake-401":
         return JSONResponse({"error": {"message": "invalid api key"}}, status_code=401)
     if key == "fake-models-unsupported":
@@ -27,14 +28,15 @@ async def models(request: Request):
         return JSONResponse({}, status_code=302, headers={"Location": "https://example.com"})
     if not key.startswith("fake-"):
         return JSONResponse({"error": {"message": "invalid api key"}}, status_code=401)
-    return {"object": "list", "data": [
-        {"id": model, "object": "model"} for model in ("fake-free", "demo-billable")
-    ]}
+    return {
+        "object": "list",
+        "data": [{"id": model, "object": "model"} for model in ("fake-free", "demo-billable")],
+    }
 
 
 @app.post("/v1/chat/completions")
 async def chat(request: Request):
-    key = request.headers.get("authorization", "").removeprefix("Bearer ")
+    key = request.headers.get("authorization", "").removeprefix("Bearer ").split(":", 1)[0]
     payload = await request.json()
     failures = {
         "fake-401": (401, {"message": "fake invalid key"}, {}),
@@ -161,6 +163,7 @@ def configure_demo(server, base_url, scenario="fallback"):
         conn.execute("DELETE FROM project_profiles")
         conn.execute("DELETE FROM usage_rollups")
         conn.execute("DELETE FROM credential_checks")
+        conn.execute("DELETE FROM rate_observations")
         conn.execute("DELETE FROM credentials")
         conn.execute("DELETE FROM quota_state")
         conn.execute("DELETE FROM daily_usage")
@@ -177,7 +180,7 @@ def configure_demo(server, base_url, scenario="fallback"):
             label=label,
             plan_type=plan,
             base_url=base_url,
-            secret_value=secret,
+            secret_value=secret + ":" + hashlib.sha256(label.encode()).hexdigest()[:8],
             env_name=None,
             quota_group=group,
             priority=0,
@@ -227,7 +230,7 @@ def configure_demo(server, base_url, scenario="fallback"):
                 label=label,
                 plan_type="TRIAL_CREDIT",
                 base_url=base_url,
-                secret_value="fake-paid",
+                secret_value="fake-paid:" + hashlib.sha256(label.encode()).hexdigest()[:8],
                 env_name=None,
                 quota_group="hackathon",
                 account_label="Hackathon project",

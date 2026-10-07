@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from quotamesh.activity import ActivityFeed
 from quotamesh.config import data_directory
+from quotamesh.lifecycle import process_lock
 from quotamesh.routes.connect import router as connect_router
 from quotamesh.routes.dashboard import router as dashboard_router
 from quotamesh.routes.gateway import router as gateway_router
@@ -41,7 +42,8 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         try:
-            yield
+            with process_lock(store.data_dir):
+                yield
         finally:
             await client.aclose()
 

@@ -52,9 +52,8 @@ def fresh_start(browser):
                 "document.querySelectorAll('#doctor-results button').length === 1 && !document.querySelector('#save-check').disabled"
             )
             assert form.locator("[name=secret_value]").input_value() == ""
-            page.locator("#doctor-results select").select_option("fake-free")
-            page.locator("#doctor-results button").click()
-            page.locator("#policy-form button[type=submit]").click()
+            page.locator("#setup-model").fill("fake-free")
+            page.locator("#setup-form button[type=submit]").click()
             page.wait_for_function(
                 "document.querySelector('#explain-summary').textContent.includes('Saved policy: qm/default') && !document.querySelector('#policy-form button[type=submit]').disabled"
             )
@@ -73,7 +72,7 @@ def fresh_start(browser):
 
 def phase_four(page, app, port):
     """New UI paths use explicit actions and keep unsaved edits intact."""
-    page.wait_for_function("document.querySelectorAll('#catalog-entries article').length === 6")
+    page.wait_for_function("document.querySelectorAll('#catalog-entries article').length === 9")
     assert "Saved policy: qm/default" in page.locator("#explain-summary").inner_text()
     assert "quotamesh key --data-dir" in page.locator("#integration-code").inner_text()
     page.locator("#integration-shell").select_option("bash")
@@ -215,6 +214,7 @@ def main():
                 assert page.locator(".wallet-bucket").count() == 3
                 assert page.locator(".trial_credit .capacity-source").count() == 1
                 assert "2 key(s)" in page.locator(".trial_credit").inner_text()
+                page.locator(".trial_credit .capacity-evidence").evaluate_all("elements => elements.forEach(el => el.open = true)")
                 assert "Not reported [UNKNOWN]" in page.locator(".trial_credit").inner_text()
                 assert not any(
                     secret in page.content() for secret in ("fake-429-short", '"secret_value":')
@@ -264,6 +264,7 @@ def main():
                     "document.querySelector('#test-summary').textContent.includes('HTTP 200') && !document.querySelector('#test-form button[type=submit]').disabled"
                 )
                 assert "Hello from fake upstream" in page.locator("#test-output").inner_text()
+                page.locator(".trial_credit .capacity-evidence").evaluate_all("elements => elements.forEach(el => el.open = true)")
                 assert (
                     "Locally estimated USD: $0.0000 [LOCAL]"
                     in page.locator(".trial_credit").inner_text()

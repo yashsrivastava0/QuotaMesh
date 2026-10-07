@@ -10,6 +10,7 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel, ConfigDict, Field
 
 from quotamesh.config import registry, validate_base_url, validate_env_name
 from quotamesh.credentials import CredentialCreate
@@ -21,6 +22,7 @@ from quotamesh.security import (
     browser_authorized,
     management_authorized,
 )
+from quotamesh.store import DuplicateCredential
 from quotamesh.usage import summarize
 
 router = APIRouter()
@@ -204,9 +206,37 @@ async def add_credential(request: Request):
     try:
         values = CredentialCreate.model_validate(await request.json()).validated()
         identifier = request.app.state.store.add_credential(**values)
+    except DuplicateCredential as exc:
+        return api_error(409, str(exc), "duplicate_credential")
     except (ValueError, TypeError, AttributeError):
         return api_error(400, "Invalid credential configuration", "invalid_configuration")
     return JSONResponse({"credential_id": identifier}, status_code=201)
+
+
+class InitialSetup(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    credential_id: int = Field(ge=1)
+    model: str = Field(min_length=1, max_length=200)
+
+
+@router.post("/api/setup")
+async def initial_setup(request: Request):
+    if not management_authorized(request):
+        return api_error(401, "Local authorization required", "unauthorized")
+    try:
+        values = InitialSetup.model_validate(await request.json())
+        if any(ord(c) < 32 or ord(c) == 127 for c in values.model):
+            raise TypeError("Invalid model")
+        request.app.state.store.setup_default(values.credential_id, values.model)
+    except LookupError:
+        return api_error(404, "Credential not found", "credential_not_found")
+    except (TypeError, AttributeError):
+        return api_error(400, "Choose a saved credential and model", "invalid_configuration")
+    except ValueError as exc:
+        if str(exc).startswith("Default is already"):
+            return api_error(409, str(exc), "setup_conflict")
+        return api_error(400, "Choose a saved credential and model", "invalid_configuration")
+    return JSONResponse({"alias": "qm/default", "allow_paid": False}, status_code=201)
 
 
 @router.post("/api/policy")

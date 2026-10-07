@@ -1,4 +1,4 @@
-"""Record a short synthetic Phase 4 walkthrough; no provider secrets or real quota."""
+"""Record a short synthetic final MVP walkthrough; no provider secrets or real quota."""
 
 import os
 import socket
@@ -16,7 +16,7 @@ from quotamesh.demo import configure_demo
 
 
 def main():
-    output = Path("output/phase-four")
+    output = Path("output/phase-five")
     output.mkdir(parents=True, exist_ok=True)
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
@@ -94,7 +94,7 @@ def main():
                 assert not errors, errors
                 video = page.video
                 context.close()
-                path = output / "quotamesh-phase-four.webm"
+                path = output / "quotamesh-final.webm"
                 Path(video.path()).replace(path)
                 browser.close()
                 print(path.resolve())

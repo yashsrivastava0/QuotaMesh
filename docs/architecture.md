@@ -1,4 +1,4 @@
-# Architecture through phase four
+# Final MVP architecture (v0.1.0)
 
 One local FastAPI/Uvicorn process owns the gateway, dashboard, shared HTTPX client, and
 SQLite store. No service dependencies or frontend build. Named project profiles contain ordered provider/model targets with optional pinned keys.
@@ -135,3 +135,19 @@ Only Chat Completions is supported. Custom/preset API behavior is synthetic-fixt
 live account/model verification requires the user's authorized keys. See the
 [phase-four implementation](phase-four-plan.md) for verification and assumptions, and the
 [roadmap](../ROADMAP.md) for phase boundaries.
+
+## Final release additions
+
+Schema v5 adds nullable first-response timing to attempts/rollups and bounded,
+allowlisted rate observations guarded by credential revision and endpoint. These
+are passive metadata only, stale after at most 60 seconds or an earlier reset.
+Initial setup atomically creates default with paid off; existing target replacement
+requires normal profile editing. Duplicate access is rejected at add/rotation/import;
+legacy effective-key aliases share observed blocks and are never retried in one
+request. OS-held process locking protects each data directory during app lifespan.
+
+The frontend caches static catalog/snippet data and preserves expandable evidence
+and traces. No new runtime dependencies were introduced. The MIT 0.1.0 distributions
+are verified through real uvx processes outside the checkout. Platform CI and OIDC
+publishing are separate from live-provider readiness. The final testing guide records
+MVP coverage and documented exclusions; release evidence records actual results.

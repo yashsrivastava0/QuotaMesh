@@ -2,7 +2,7 @@
 
 ## Project context
 
-QuotaMesh is a local AI API capacity gateway. The product reference is [`QuotaMesh_MVP_Architecture_Product_Spec_v0.3.pdf`](QuotaMesh_MVP_Architecture_Product_Spec_v0.3.pdf); the implementation sequence and boundaries are in [`ROADMAP.md`](ROADMAP.md). The current implementation includes Phase 1 secure pass-through, Phase 2 deterministic routing, ordered pools, scoped cooldowns, expiry, and local paid caps, Phase 3 Capacity Wallet, named profiles, credential lifecycle and durable usage/history, and Phase 4 Explain/Connect, manual Doctor, integration snippets, environment references, local activity and a dated Access Catalog. Keep later phase features out of scope unless requested or a minimal prerequisite is necessary and documented.
+QuotaMesh is a local AI API capacity gateway. The product reference is [`QuotaMesh_MVP_Architecture_Product_Spec_v0.3.pdf`](QuotaMesh_MVP_Architecture_Product_Spec_v0.3.pdf); the implementation sequence and boundaries are in [`ROADMAP.md`](ROADMAP.md). The current implementation includes Phase 1 secure pass-through, Phase 2 deterministic routing, ordered pools, scoped cooldowns, expiry, and local paid caps, Phase 3 Capacity Wallet, named profiles, credential lifecycle and durable usage/history, and Phase 4 Explain/Connect, manual Doctor, integration snippets, environment references, local activity and a dated Access Catalog. Phase 5 finalizes the MVP release, setup, passive observations, packaging and platform QA. No Phase 6 is planned. Deferred PDF extensions remain outside the finalized MVP unless explicitly requested.
 
 ## Start each task
 

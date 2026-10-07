@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import threading
 import time
 import webbrowser
@@ -18,6 +19,7 @@ import uvicorn
 from rich.console import Console
 from rich.table import Table
 
+from quotamesh import __version__
 from quotamesh.app import create_app
 from quotamesh.config import data_directory
 from quotamesh.store import Store
@@ -27,6 +29,14 @@ app = typer.Typer(no_args_is_help=True, help="Your local AI API capacity gateway
 console = Console()
 profile_app = typer.Typer(help="Inspect a saved project's routing policy")
 app.add_typer(profile_app, name="profile")
+
+
+@app.callback(invoke_without_command=True)
+def version(version: bool = typer.Option(False, "--version", is_eager=True)):
+    """Inspect the installed version without opening local storage."""
+    if version:
+        print(__version__)
+        raise typer.Exit()
 
 
 def run_server(server, port, browser):
@@ -93,7 +103,14 @@ def local_api(path, *, port=8787, body=None, method="GET"):
 @app.command()
 def start(port: int = typer.Option(8787, min=1, max=65535), browser: bool = True) -> None:
     """Start the local dashboard and Chat Completions gateway."""
-    server = create_app()
+    try:
+        server = create_app()
+    except (OSError, sqlite3.Error, RuntimeError):
+        console.print(
+            "Cannot open local storage. Check its permissions and supported schema version.",
+            markup=False,
+        )
+        raise typer.Exit(1) from None
     url = f"http://127.0.0.1:{port}/bootstrap?token={server.state.bootstrap_token}"
     console.print("QuotaMesh is starting on 127.0.0.1")
     console.print("Open this one-time dashboard URL:")

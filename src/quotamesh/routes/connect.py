@@ -18,6 +18,7 @@ from quotamesh.connect import explain, integration_snippets
 from quotamesh.credentials import CredentialCreate
 from quotamesh.doctor import DoctorInput, run_doctor, until_disconnected
 from quotamesh.security import api_error, management_authorized
+from quotamesh.store import DuplicateCredential
 
 router = APIRouter()
 ENV_NAMES = {
@@ -179,7 +180,11 @@ async def import_environment(request: Request):
             label=registry()[row["provider_id"]].name + " / " + name,
             env_name=name,
         ).validated()
-        identifier = request.app.state.store.add_credential(**credential)
+        try:
+            identifier = request.app.state.store.add_credential(**credential)
+        except DuplicateCredential:
+            skipped.append(name)
+            continue
         imported.append({"env_name": name, "credential_id": identifier})
     return JSONResponse({"imported": imported, "skipped": skipped})
 
