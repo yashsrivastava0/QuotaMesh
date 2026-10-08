@@ -136,5 +136,14 @@ Screenshots, recordings, temporary keys, and package output are ignored by Git.
 - Synthetic walkthrough recording completed. Interactive Edge review confirmed
   the light overview and navigation to Route & test.
 
-These results cover synthetic local traffic. Live provider accounts and remote
-macOS/Linux CI were not exercised during this frontend task.
+These results cover synthetic traffic. Live provider accounts were not exercised.
+
+### CI follow-up (2026-10-08)
+
+The merged frontend's CI passed the eight Windows/macOS/Linux Python jobs and
+installed-wheel client checks. Browser acceptance failed because the copy check
+read its status before the asynchronous clipboard operation completed. The
+follow-up waits for the completion state, verifies actual clipboard contents with
+explicit test permission, and separately simulates delayed permission rejection
+to verify selection and focus for manual copying. This changes the test harness;
+the application's existing copy fallback is preserved.
