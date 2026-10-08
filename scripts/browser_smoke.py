@@ -12,7 +12,7 @@ from tempfile import TemporaryDirectory
 
 import uvicorn
 from playwright.sync_api import Error as BrowserError
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import expect, sync_playwright
 
 from quotamesh.app import create_app
 from quotamesh.demo import app as fake_app
@@ -178,11 +178,34 @@ def journeys(page, app, origin, screenshots, metrics):
     for client in ("python", "node", "curl", "opencode", "env"):
         page.locator("#integration-client").select_option(client)
         assert page.locator("#integration-code").inner_text()
+    page.context.grant_permissions(["clipboard-read", "clipboard-write"], origin=origin)
     page.locator("#copy-integration").click()
-    assert page.locator("#copy-status").inner_text() in {
-        "Copied.",
-        "Text selected. Press Ctrl+C or Command+C to copy.",
-    }
+    expect(page.locator("#copy-status")).to_have_text("Copied.")
+    snippet = page.locator("#integration-code").inner_text()
+    copied = page.evaluate("navigator.clipboard.readText()")
+    assert copied.replace("\r\n", "\n") == snippet.replace("\r\n", "\n"), repr(copied)
+    # Exercise an asynchronous permission failure without relying on OS prompts.
+    page.evaluate(
+        """() => { window.originalClipboardWrite = navigator.clipboard.writeText;
+        navigator.clipboard.writeText = () => new Promise((_, reject) => {
+            setTimeout(() => reject(new DOMException('Denied', 'NotAllowedError')), 100);
+        }); }"""
+    )
+    try:
+        page.locator("#integration-client").select_option("python")
+        page.locator("#copy-integration").click()
+        expect(page.locator("#copy-status")).to_have_text(
+            "Text selected. Press Ctrl+C or Command+C to copy."
+        )
+        assert page.evaluate("getSelection().toString()") == page.locator(
+            "#integration-code"
+        ).inner_text()
+        expect(page.locator("#integration-code")).to_be_focused()
+    finally:
+        page.evaluate(
+            "() => { navigator.clipboard.writeText = window.originalClipboardWrite; delete window.originalClipboardWrite; }"
+        )
+        page.context.clear_permissions()
     page.locator("#profile-select").select_option("free-app")
     page.wait_for_url("**/connect?profile=free-app")
     ready(page)
@@ -351,6 +374,7 @@ def main():
                     [
                         "nine pages and responsive layout",
                         "profile CRUD, defaults, dirty Save/Stay, context and back navigation",
+                        "clipboard write completion and delayed permission-denied fallback",
                         "credential edits, deletion, privacy and environment preview",
                         "Doctor listing and paid guard",
                         "12 routing and streaming scenarios",
