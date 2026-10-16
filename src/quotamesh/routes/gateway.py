@@ -21,6 +21,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from quotamesh.config import registry
+from quotamesh.connect import REASONS, recovery_action
 from quotamesh.engine.classify import (
     Outcome,
     classify,
@@ -42,6 +43,8 @@ MAX_FRAMED_BYTES = 1024 * 1024
 # A committed stream fails after this long without upstream bytes (or the profile's longer
 # first-event timeout); httpx itself has no read timeout.
 MIN_IDLE_TIMEOUT_S = 60.0
+# OpenAI-shaped "created" for profile aliases: one stable epoch per process.
+MODELS_CREATED = int(time.time())
 STREAM_ENDED = (
     b'event: error\ndata: {"error":{"message":"Upstream ended before DONE",'
     b'"type":"upstream_stream"}}\n\n'
@@ -257,16 +260,28 @@ def deadline_response(attempts, last_error_class=None, last_http_status=None, he
     )
 
 
-def blocked_response(decisions, code="no_candidates", slug="default"):
+def blocked_response(decisions, code="no_candidates", slug="default", request_id=None):
     now = datetime.now(UTC)
     recoveries = [datetime.fromisoformat(d["recovery_at"]) for d in decisions if d["recovery_at"]]
     wait = min(((date - now).total_seconds() for date in recoveries), default=9999)
     status = 429 if 0 < wait <= 60 else 503
     headers = {"Retry-After": str(max(1, math.ceil(wait)))} if status == 429 else {}
+    headers["X-QuotaMesh-Profile"] = slug
+    if request_id:
+        headers["X-QuotaMesh-Request-Id"] = request_id
+    # The same explanation and recovery wording as Explain, so clients can say what to fix.
+    candidates = [
+        {
+            **d,
+            "explanation": REASONS.get(d["skip_reason"], "Eligible under the saved policy."),
+            "recovery_action": None if d["eligible"] else recovery_action(d),
+        }
+        for d in decisions
+    ]
     return JSONResponse(
         {
             "error": {"message": f"No eligible capacity for qm/{slug}", "type": code, "code": code},
-            "quotamesh": {"candidates": decisions},
+            "quotamesh": {"candidates": candidates},
         },
         status_code=status,
         headers=headers,
@@ -609,7 +624,16 @@ async def execute_chat(request: Request, *, candidate=None, request_id=None) -> 
         return deadline_response(count, *last_attempt)
     if last_response:
         return last_response
-    return blocked_response(decisions, slug=slug)
+    return blocked_response(decisions, slug=slug, request_id=request_id)
+
+
+def model_item(slug: str) -> dict[str, Any]:
+    return {
+        "id": "qm/" + slug,
+        "object": "model",
+        "created": MODELS_CREATED,
+        "owned_by": "quotamesh",
+    }
 
 
 @router.get("/v1/models")
@@ -620,9 +644,19 @@ def models(request: Request) -> Response:
         {
             "object": "list",
             "data": [
-                {"id": "qm/" + p["slug"], "object": "model", "owned_by": "quotamesh"}
-                for p in request.app.state.store.profiles()
-                if p["enabled"]
+                model_item(p["slug"]) for p in request.app.state.store.profiles() if p["enabled"]
             ],
         }
+    )
+
+
+@router.get("/v1/models/{model_id:path}")
+def model(request: Request, model_id: str) -> Response:
+    if not bearer_authorized(request):
+        return api_error(401, "Invalid local gateway key", "unauthorized")
+    for p in request.app.state.store.profiles():
+        if p["enabled"] and "qm/" + p["slug"] == model_id:
+            return JSONResponse(model_item(p["slug"]))
+    return api_error(
+        404, "Model not found; GET /v1/models lists the callable qm/ aliases", "model_not_found"
     )
