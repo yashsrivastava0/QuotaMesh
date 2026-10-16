@@ -1005,6 +1005,43 @@ class Store:
             results.append(result)
         return results
 
+    def reconcile_unknown_spend(self, slug, scope, amount_usd, now):
+        """Replace unknown paid cost for a profile with a user-checked manual amount.
+
+        Clears ``unknown_cost`` for today (or this UTC month) so capped paid routing can resume,
+        and adds the amount the user read from the provider's billing page to today's spend.
+        Returns the number of day rows cleared.
+        """
+        day = now.date().isoformat()
+        prefix = day if scope == "today" else day[:7]
+        with self.connection() as conn:
+            row = conn.execute(
+                "SELECT id FROM project_profiles WHERE slug=? AND deleted_at IS NULL", (slug,)
+            ).fetchone()
+            if row is None:
+                raise LookupError("Profile not found")
+            cleared = conn.execute(
+                "UPDATE daily_usage SET unknown_cost=0 WHERE profile_id=? AND day LIKE ? "
+                "AND unknown_cost>0",
+                (row["id"], prefix + "%"),
+            ).rowcount
+            conn.execute(
+                """INSERT INTO daily_usage(day,profile_id,cost_usd,unknown_cost) VALUES (?,?,?,0)
+                ON CONFLICT(day,profile_id) DO UPDATE SET cost_usd=cost_usd+excluded.cost_usd""",
+                (day, row["id"], amount_usd),
+            )
+        return cleared
+
+    def acknowledge_accounting(self):
+        """Prove storage accepts writes again, then remove the paid-accounting marker."""
+        with self.connection() as conn:
+            conn.execute(
+                "INSERT INTO settings(key,value) VALUES('accounting_acknowledged_at',?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (datetime.now(UTC).isoformat(),),
+            )
+        self.accounting_marker.unlink(missing_ok=True)
+
     def prune_history(self, now, max_rows=50000, days=30):
         with self.connection() as conn:
             conn.execute(
