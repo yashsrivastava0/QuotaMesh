@@ -20,7 +20,15 @@ import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from quotamesh.engine.classify import Outcome, classify, sse_payload, usage_metadata
+from quotamesh.config import registry
+from quotamesh.connect import REASONS, recovery_action
+from quotamesh.engine.classify import (
+    Outcome,
+    classify,
+    error_status,
+    sse_payload,
+    usage_metadata,
+)
 from quotamesh.observations import rate_observations
 from quotamesh.routing import decision_snapshot
 from quotamesh.security import api_error, bearer_authorized
@@ -30,6 +38,21 @@ router = APIRouter()
 LOG = logging.getLogger("quotamesh")
 MAX_BODY_BYTES = 10 * 1024 * 1024
 MAX_FIRST_EVENT_BYTES = 64 * 1024
+# An injected stream is forwarded event by event; this bounds bytes held awaiting an event end.
+MAX_FRAMED_BYTES = 1024 * 1024
+# A committed stream fails after this long without upstream bytes (or the profile's longer
+# first-event timeout); httpx itself has no read timeout.
+MIN_IDLE_TIMEOUT_S = 60.0
+# OpenAI-shaped "created" for profile aliases: one stable epoch per process.
+MODELS_CREATED = int(time.time())
+STREAM_ENDED = (
+    b'event: error\ndata: {"error":{"message":"Upstream ended before DONE",'
+    b'"type":"upstream_stream"}}\n\n'
+)
+STREAM_INTERRUPTED = (
+    b'event: error\ndata: {"error":{"message":"Upstream stream interrupted",'
+    b'"type":"upstream_stream"}}\n\n'
+)
 
 
 def _sse_end(buffer: bytes) -> int:
@@ -85,16 +108,188 @@ def _record_attempt(request: Request, **values: Any) -> None:
         LOG.warning("Could not write request metadata")
 
 
-def blocked_response(decisions, code="no_candidates", slug="default"):
+class StreamState:
+    """Metadata observed on a committed stream; never holds content."""
+
+    __slots__ = ("done", "error", "finished", "usage")
+
+    def __init__(self) -> None:
+        self.done = self.error = self.finished = False
+        self.usage: dict[str, Any] = {}
+
+
+def inspect_event(event: bytes, state: StreamState, decision: dict[str, Any]) -> bool:
+    """Record metadata from one complete SSE event; return True for a usage-only chunk.
+
+    Inspection is bounded to small events, keeps token/cost metadata only and never changes
+    the bytes. A usage-only chunk is OpenAI's final `"choices": []` event carrying usage.
+    """
+    if len(event) > MAX_FIRST_EVENT_BYTES:
+        return False
+    data = b"\n".join(line[5:].lstrip() for line in event.splitlines() if line.startswith(b"data:"))
+    if data.strip() == b"[DONE]":
+        state.done = True
+        return False
+    try:
+        obj = json.loads(data)
+    except (ValueError, UnicodeDecodeError):
+        return False
+    if not isinstance(obj, dict):
+        return False
+    if "error" in obj:
+        state.error = True
+        return False
+    usage = obj.get("usage")
+    if usage and isinstance(usage, dict):
+        state.usage = usage_metadata(data, decision)
+    choices = obj.get("choices")
+    if not isinstance(choices, list):
+        return False
+    if any(isinstance(choice, dict) and choice.get("finish_reason") for choice in choices):
+        state.finished = True
+    return not choices and isinstance(usage, dict)
+
+
+async def relay_stream(
+    request: Request,
+    *,
+    first: bytes,
+    remainder: bytes,
+    chunks: AsyncIterator[bytes],
+    upstream: httpx.Response,
+    selected: dict[str, Any],
+    details: dict[str, Any],
+    started: float,
+    framed: bool,
+    idle_s: float,
+) -> AsyncIterator[bytes]:
+    """Forward a committed stream; a failure after commitment becomes an SSE error event.
+
+    Without injected usage, upstream chunks pass through byte for byte. When QuotaMesh injected
+    `stream_options.include_usage` (`framed`), complete events are forwarded unchanged except
+    the usage-only chunk the client did not ask for.
+    """
+    state = StreamState()
+    result, error_class = "OK", None
+    pending = [part for part in (first, remainder) if part]
+    # Framed: bytes awaiting an event end. Otherwise: a bounded copy used only for inspection.
+    buffer = b""
+    eof = False
+    try:
+        while not state.error:
+            if pending:
+                chunk = pending.pop(0)
+            else:
+                try:
+                    # A stalled upstream becomes a mid-stream failure (TimeoutError below).
+                    async with asyncio.timeout(idle_s):
+                        chunk = await anext(chunks)
+                except StopAsyncIteration:
+                    eof = True
+                    break
+            buffer += chunk
+            forward = []
+            while (end := _sse_end(buffer)) >= 0:
+                event, buffer = buffer[:end], buffer[end:]
+                usage_only = inspect_event(event, state, selected)
+                if framed and not usage_only:
+                    forward.append(event)
+            if not framed:
+                if len(buffer) > MAX_FIRST_EVENT_BYTES:
+                    buffer = b""
+                yield chunk
+                if state.done:
+                    break  # complete; do not wait for the upstream to close
+                continue
+            if len(buffer) > MAX_FRAMED_BYTES:
+                # No event end within the bound: stop stripping and pass the rest through raw.
+                forward.append(buffer)
+                buffer, framed = b"", False
+            if forward:
+                yield b"".join(forward)
+            if state.done:
+                break  # complete; do not wait for the upstream to close
+        if buffer and (eof or state.done):
+            if eof:
+                inspect_event(buffer, state, selected)  # a final event may lack its blank line
+            if framed:
+                yield buffer
+        # Complete: [DONE], or a finish_reason followed by a clean upstream close (some
+        # providers omit the marker; docs/live-provider-notes.md D1).
+        if state.error or not (state.done or (state.finished and eof)):
+            result, error_class = "MID_STREAM_FAILURE", "stream"
+            if not state.error:
+                yield STREAM_ENDED
+    except (asyncio.CancelledError, GeneratorExit):
+        # SDKs close the connection as soon as they read the end marker; a client that
+        # stops after the complete response did not cancel anything.
+        if not (state.done or state.finished):
+            result, error_class = "CLIENT_CANCELLED", "cancelled"
+        raise
+    except (httpx.HTTPError, TimeoutError):
+        if not state.done:  # after [DONE] the response is already complete
+            result, error_class = "MID_STREAM_FAILURE", "stream"
+            yield STREAM_INTERRUPTED
+    finally:
+        if selected["plan_type"] == "FREE" and state.usage.get("provider_cost_usd") is None:
+            state.usage["estimated_cost_usd"] = 0
+        try:
+            # Synchronous, before any await, so cancellation cannot skip the record.
+            _record_attempt(
+                request,
+                **details,
+                **state.usage,
+                outcome=result,
+                http_status=200,
+                error_class=error_class,
+                latency_ms=int((time.monotonic() - started) * 1000),
+            )
+        finally:
+            await upstream.aclose()
+
+
+def deadline_response(attempts, last_error_class=None, last_http_status=None, headers=None):
+    """Contract 504 once the profile deadline passes; describes the last attempt, if any."""
+    return JSONResponse(
+        {
+            "error": {
+                "message": "Route attempt deadline exceeded",
+                "type": "deadline_exceeded",
+                "code": "deadline_exceeded",
+            },
+            "quotamesh": {
+                "attempts": attempts,
+                "last_error_class": last_error_class,
+                "last_http_status": last_http_status,
+            },
+        },
+        status_code=504,
+        headers=headers if attempts else None,
+    )
+
+
+def blocked_response(decisions, code="no_candidates", slug="default", request_id=None):
     now = datetime.now(UTC)
     recoveries = [datetime.fromisoformat(d["recovery_at"]) for d in decisions if d["recovery_at"]]
     wait = min(((date - now).total_seconds() for date in recoveries), default=9999)
     status = 429 if 0 < wait <= 60 else 503
     headers = {"Retry-After": str(max(1, math.ceil(wait)))} if status == 429 else {}
+    headers["X-QuotaMesh-Profile"] = slug
+    if request_id:
+        headers["X-QuotaMesh-Request-Id"] = request_id
+    # The same explanation and recovery wording as Explain, so clients can say what to fix.
+    candidates = [
+        {
+            **d,
+            "explanation": REASONS.get(d["skip_reason"], "Eligible under the saved policy."),
+            "recovery_action": None if d["eligible"] else recovery_action(d, slug),
+        }
+        for d in decisions
+    ]
     return JSONResponse(
         {
             "error": {"message": f"No eligible capacity for qm/{slug}", "type": code, "code": code},
-            "quotamesh": {"candidates": decisions},
+            "quotamesh": {"candidates": candidates},
         },
         status_code=status,
         headers=headers,
@@ -170,11 +365,19 @@ async def execute_chat(request: Request, *, candidate=None, request_id=None) -> 
     deadline = time.monotonic() + (
         profile["first_event_timeout_s"] if streamed else profile["nonstream_deadline_s"]
     )
+    # Local accounting needs stream usage. Ask for it only when the client did not, and only
+    # from providers whose registry entry verified that stream_options.include_usage works.
+    client_options = payload.get("stream_options")
+    can_inject = streamed and (
+        client_options is None
+        or (isinstance(client_options, dict) and client_options.get("include_usage") is not True)
+    )
     attempted = set()
     attempted_secrets = set()
     context_skip = set()
     count = 0
     last_response = None
+    last_attempt = (None, None, {})  # error class, HTTP status and headers of the last attempt
     while count < max_attempts:
         # Recompute after every state change; never use a stale initial pool for fallback.
         decisions, profile, credentials = decision_snapshot(request.app, slug)
@@ -195,7 +398,7 @@ async def execute_chat(request: Request, *, candidate=None, request_id=None) -> 
             break
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            return api_error(504, "Route attempt deadline exceeded", "deadline_exceeded")
+            return deadline_response(count, *last_attempt)
         connection = credentials[selected["credential_id"]]
         selected["credential_revision"] = connection["fingerprint"]
         selected["credential_base_url"] = connection["base_url"]
@@ -240,6 +443,11 @@ async def execute_chat(request: Request, *, candidate=None, request_id=None) -> 
             "X-QuotaMesh-Request-Id": request_id,
         }
         forwarded = dict(payload, model=selected["model"])
+        provider = registry().get(selected["provider_id"])
+        inject = can_inject and provider is not None and provider.stream_usage == "inject"
+        if inject:
+            forwarded["stream_options"] = {**(client_options or {}), "include_usage": True}
+            qm_headers["X-QuotaMesh-Usage-Injected"] = "true"
         headers = {
             "Authorization": f"Bearer {secret}",
             "Content-Type": "application/json",
@@ -322,17 +530,10 @@ async def execute_chat(request: Request, *, candidate=None, request_id=None) -> 
                             pending = remainder
                             continue
                         if "error" in event or first_event_is_error(first):
-                            error = event.get("error") or {}
-                            error_status = (
-                                error.get("status", error.get("code", 502))
-                                if isinstance(error, dict)
-                                else 502
-                            )
-                            if not isinstance(error_status, int) or not 400 <= error_status <= 599:
-                                error_status = 502
+                            # Google-style events name a status string; derive an HTTP status.
                             outcome = classify(
                                 selected["provider_id"],
-                                error_status,
+                                error_status(event.get("error")),
                                 upstream.headers,
                                 json.dumps(event).encode(),
                                 datetime.now(UTC),
@@ -355,90 +556,34 @@ async def execute_chat(request: Request, *, candidate=None, request_id=None) -> 
                 latency_ms=int((time.monotonic() - started) * 1000),
             )
             raise
-        except (httpx.HTTPError, TimeoutError):
+        except httpx.HTTPError:  # includes httpx timeouts: the upstream itself misbehaved
             outcome = Outcome("network", True, "target", "DEGRADED")
             status = 504 if time.monotonic() >= deadline else 502
+        except TimeoutError:
+            # The profile deadline ran out; that says nothing about the target, so keep it.
+            outcome = Outcome("deadline", False)
+            status = 504
         except (ValueError, UnicodeDecodeError):
             outcome = Outcome("protocol", True, "target", "DEGRADED")
             status = 502
         if streamed and outcome.kind == "ok" and status < 300:
             apply_outcome(request, selected, outcome)
 
-            async def body_stream(
-                first=first,
-                remainder=remainder,
-                chunks=chunks,
-                selected=selected,
-                upstream=upstream,
-                details=details,
-                started=started,
-            ):
-                result, error_class = "OK", None
-                usage = usage_metadata(first.split(b"data:", 1)[-1].strip(), selected)
-                buffer = b""
-                done = False
-                try:
-                    yield first
-
-                    async def rest():
-                        if remainder:
-                            yield remainder
-                        async for chunk in chunks:
-                            yield chunk
-
-                    async for chunk in rest():
-                        # Inspection is bounded and metadata-only; bytes pass through unchanged.
-                        buffer += chunk
-                        while (end := _sse_end(buffer)) >= 0:
-                            event_bytes, buffer = buffer[:end], buffer[end:]
-                            if len(event_bytes) > MAX_FIRST_EVENT_BYTES:
-                                continue
-                            data = b"\n".join(
-                                line[5:].lstrip()
-                                for line in event_bytes.splitlines()
-                                if line.startswith(b"data:")
-                            )
-                            if data == b"[DONE]":
-                                done = True
-                            elif data:
-                                try:
-                                    obj = json.loads(data)
-                                    if isinstance(obj, dict) and obj.get("usage"):
-                                        usage = usage_metadata(data, selected)
-                                    if isinstance(obj, dict) and "error" in obj:
-                                        result, error_class = "MID_STREAM_FAILURE", "stream"
-                                except (ValueError, UnicodeDecodeError):
-                                    pass
-                        if len(buffer) > MAX_FIRST_EVENT_BYTES:
-                            buffer = b""
-                        yield chunk
-                        if error_class:
-                            break
-                    if not done and result == "OK":
-                        result, error_class = "MID_STREAM_FAILURE", "stream"
-                        yield b'event: error\ndata: {"error":{"message":"Upstream ended before DONE","type":"upstream_stream"}}\n\n'
-                except (asyncio.CancelledError, GeneratorExit):
-                    result, error_class = "CLIENT_CANCELLED", "cancelled"
-                    raise
-                except (httpx.HTTPError, TimeoutError):
-                    result, error_class = "MID_STREAM_FAILURE", "stream"
-                    yield b'event: error\ndata: {"error":{"message":"Upstream stream interrupted","type":"upstream_stream"}}\n\n'
-                finally:
-                    await upstream.aclose()
-                    if selected["plan_type"] == "FREE" and usage.get("provider_cost_usd") is None:
-                        usage["estimated_cost_usd"] = 0
-                    _record_attempt(
-                        request,
-                        **details,
-                        **usage,
-                        outcome=result,
-                        http_status=200,
-                        error_class=error_class,
-                        latency_ms=int((time.monotonic() - started) * 1000),
-                    )
-
             return StreamingResponse(
-                body_stream(), media_type="text/event-stream", headers=qm_headers
+                relay_stream(
+                    request,
+                    first=first,
+                    remainder=remainder,
+                    chunks=chunks,
+                    upstream=upstream,
+                    selected=selected,
+                    details=details,
+                    started=started,
+                    framed=inject,
+                    idle_s=max(MIN_IDLE_TIMEOUT_S, profile["first_event_timeout_s"]),
+                ),
+                media_type="text/event-stream",
+                headers=qm_headers,
             )
         if upstream:
             await upstream.aclose()
@@ -453,7 +598,7 @@ async def execute_chat(request: Request, *, candidate=None, request_id=None) -> 
         # Known rejected requests carry zero charge; uncertain transport failures remain unknown.
         if (
             status >= 400
-            and outcome.kind not in {"network", "protocol"}
+            and outcome.kind not in {"network", "protocol", "deadline"}
             or (
                 outcome.kind == "ok"
                 and selected["plan_type"] == "FREE"
@@ -470,6 +615,9 @@ async def execute_chat(request: Request, *, candidate=None, request_id=None) -> 
             error_class=None if outcome.kind == "ok" else outcome.kind,
             latency_ms=int((time.monotonic() - started) * 1000),
         )
+        last_attempt = (None if outcome.kind == "ok" else outcome.kind, status, qm_headers)
+        if outcome.kind == "deadline":
+            return deadline_response(count, *last_attempt)
         last_response = (
             Response(body, status_code=status, media_type=media_type, headers=qm_headers)
             if body and status != 502
@@ -481,10 +629,19 @@ async def execute_chat(request: Request, *, candidate=None, request_id=None) -> 
         if outcome.scope == "next_target":
             context_skip.add(selected["position"])
     if time.monotonic() >= deadline:
-        return api_error(504, "Route attempt deadline exceeded", "deadline_exceeded")
+        return deadline_response(count, *last_attempt)
     if last_response:
         return last_response
-    return blocked_response(decisions, slug=slug)
+    return blocked_response(decisions, slug=slug, request_id=request_id)
+
+
+def model_item(slug: str) -> dict[str, Any]:
+    return {
+        "id": "qm/" + slug,
+        "object": "model",
+        "created": MODELS_CREATED,
+        "owned_by": "quotamesh",
+    }
 
 
 @router.get("/v1/models")
@@ -495,9 +652,19 @@ def models(request: Request) -> Response:
         {
             "object": "list",
             "data": [
-                {"id": "qm/" + p["slug"], "object": "model", "owned_by": "quotamesh"}
-                for p in request.app.state.store.profiles()
-                if p["enabled"]
+                model_item(p["slug"]) for p in request.app.state.store.profiles() if p["enabled"]
             ],
         }
+    )
+
+
+@router.get("/v1/models/{model_id:path}")
+def model(request: Request, model_id: str) -> Response:
+    if not bearer_authorized(request):
+        return api_error(401, "Invalid local gateway key", "unauthorized")
+    for p in request.app.state.store.profiles():
+        if p["enabled"] and "qm/" + p["slug"] == model_id:
+            return JSONResponse(model_item(p["slug"]))
+    return api_error(
+        404, "Model not found; GET /v1/models lists the callable qm/ aliases", "model_not_found"
     )

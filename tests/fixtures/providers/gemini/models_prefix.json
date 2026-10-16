@@ -1,0 +1,46 @@
+{
+  "source": "live probe 2026-10-16",
+  "provider": "gemini",
+  "case": "models_prefix",
+  "request": {
+    "path": "/chat/completions",
+    "fields": [
+      "max_completion_tokens",
+      "messages",
+      "model"
+    ],
+    "model": "models/gemini-3.5-flash-lite",
+    "stream": false
+  },
+  "status": 200,
+  "latency_ms": 14713,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "<redacted>",
+          "extra_content": {
+            "google": {
+              "thought_signature": "<redacted>"
+            }
+          },
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 0,
+    "id": "<id>",
+    "model": "models/gemini-3.5-flash-lite",
+    "object": "chat.completion",
+    "usage": {
+      "completion_tokens": 1,
+      "prompt_tokens": 8,
+      "total_tokens": 9
+    }
+  }
+}

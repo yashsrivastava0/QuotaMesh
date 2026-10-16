@@ -11,7 +11,7 @@
   {% if page not in ['help'] %}<script src="{{ asset_url('pages/' + page + '.js') }}" defer></script>{% endif %}
   <script src="{{ asset_url('boot.js') }}" defer></script>
 </head>
-<body data-page="{{ page }}" data-demo="{{ 'true' if demo_mode else 'false' }}">
+<body data-page="{{ page }}" data-profile="{{ selected_profile }}" data-demo="{{ 'true' if demo_mode else 'false' }}">
 <a class="skip-link" href="#main">Skip to content</a>
 <header class="topbar">
   <a class="brand" href="/" data-profile-link><span class="logo" aria-hidden="true">Q</span>QuotaMesh</a>
@@ -21,7 +21,7 @@
   <aside class="navigation">
     <nav aria-label="Main navigation" class="section-nav">
       {% for path, title in page_nav %}
-      <a href="{{ path }}?profile={{ selected_profile|urlencode }}" data-profile-link {% if request.url.path == path or path == '/help' and page in ['doctor', 'catalog'] %}aria-current="page"{% endif %}>{{ title }}</a>
+      <a href="{{ path }}?profile={{ selected_profile|urlencode }}" data-profile-link{% if path == '/start' %} class="nav-start{{ '' if configured else ' prominent' }}"{% endif %}{% if request.url.path == path %} aria-current="page"{% endif %}>{{ title }}</a>
       {% endfor %}
     </nav>
     <p class="nav-note">One local endpoint.<br>Your saved rules.</p>
@@ -30,10 +30,10 @@
   <main id="main" tabindex="-1">
     <header class="page-heading">
       <div><div class="eyebrow">{{ 'SAFE DEMO' if demo_mode else 'YOUR LOCAL GATEWAY' }}</div><h1>{{ page_title }}</h1><p>{{ page_description }}</p></div>
-      <label class="profile-picker">Saved profile<select id="profile-select">
+      {% if page not in ['playground', 'start'] %}<label class="profile-picker">Saved profile<select id="profile-select">
         {% for profile in profiles %}<option value="{{ profile.slug }}" {% if profile.slug == selected_profile %}selected{% endif %}>{{ profile.name }} · qm/{{ profile.slug }}</option>{% endfor %}
         {% if not profiles %}<option value="default">Default · configure qm/default</option>{% endif %}
-      </select></label>
+      </select></label>{% endif %}
     </header>
     <div id="notice" class="alert" role="status" aria-live="polite" {% if not error %}hidden{% endif %}>{{ error or '' }}</div>
     {% if demo_mode and page == 'route' %}{% include 'pages/demo.html' %}{% endif %}

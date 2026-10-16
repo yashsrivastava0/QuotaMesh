@@ -1,0 +1,29 @@
+{
+  "source": "live probe 2026-10-16",
+  "provider": "openai",
+  "case": "invalid_key",
+  "request": {
+    "path": "/chat/completions",
+    "fields": [
+      "max_completion_tokens",
+      "messages",
+      "model"
+    ],
+    "model": "gpt-4.1-nano",
+    "stream": false
+  },
+  "status": 401,
+  "latency_ms": 609,
+  "headers": {
+    "content-type": "text/plain"
+  },
+  "body": {
+    "error": {
+      "message": "Incorrect API key provided: sk-proj-******************************0000. You can find your API key at https://platform.openai.com/account/api-keys.",
+      "type": "invalid_request_error",
+      "code": "invalid_api_key",
+      "param": null
+    },
+    "status": 401
+  }
+}

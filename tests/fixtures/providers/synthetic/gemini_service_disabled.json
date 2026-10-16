@@ -1,0 +1,35 @@
+{
+  "source": "synthetic",
+  "note": "ErrorInfo reason SERVICE_DISABLED (https://google.aip.dev/193): the key's project is off.",
+  "provider": "gemini",
+  "case": "gemini_service_disabled",
+  "status": 403,
+  "headers": {
+    "content-type": "application/json; charset=UTF-8"
+  },
+  "body": [
+    {
+      "error": {
+        "code": 403,
+        "message": "Generative Language API has not been used in project <project> before or it is disabled. Enable it by visiting https://console.developers.google.com/apis/api/generativelanguage.googleapis.com/overview?project=<project> then retry.",
+        "status": "PERMISSION_DENIED",
+        "details": [
+          {
+            "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+            "reason": "SERVICE_DISABLED",
+            "domain": "googleapis.com",
+            "metadata": {
+              "service": "generativelanguage.googleapis.com"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "expect": {
+    "kind": "funds_or_account",
+    "scope": "credential",
+    "state": "UNUSABLE",
+    "until": null
+  }
+}

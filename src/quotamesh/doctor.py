@@ -14,9 +14,116 @@ import httpx
 from fastapi import Request
 from pydantic import BaseModel, ConfigDict, Field
 
+from quotamesh.config import registry
 from quotamesh.engine.classify import classify
 from quotamesh.routes.gateway import execute_chat
 from quotamesh.routing import decision_snapshot
+
+MAX_LISTING_BYTES = 4 * 1024 * 1024
+MAX_MODEL_IDS = 1000
+GENERATION_TOKENS = 64
+MODEL_ID = re.compile(r"[A-Za-z0-9_.:/@+~\-]{1,200}")
+FINISH_REASON = re.compile(r"[A-Za-z_]{1,40}")
+# Listed ids that are unlikely to serve Chat Completions sort after chat-likely ones.
+NON_CHAT = re.compile(
+    r"(?:^|[-_./:@])(?:embedding|tts|image|imagen|veo|audio|live|transcribe|aqa|lyria|robotics)",
+    re.IGNORECASE,
+)
+
+
+# Well-known chat model families sort first in pickers; previews and experiments after them.
+CHAT_FAMILIES = (
+    "gpt-",
+    "chatgpt-",
+    "o1",
+    "o3",
+    "o4",
+    "gemini-",
+    "gemma-",
+    "claude-",
+    "grok-",
+    "llama",
+    "meta-llama",
+    "mistral",
+    "mixtral",
+    "codestral",
+    "qwen",
+    "deepseek",
+    "kimi",
+    "glm",
+)
+
+
+def model_rank(value):
+    """Picker order: chat-likely, known family, stable, alias before dated snapshot, newest."""
+    name = value.lower().rsplit("/", 1)[-1]
+    version = re.search(r"\d+(?:\.\d+)?", name)
+    return (
+        bool(NON_CHAT.search(value)),
+        not name.startswith(CHAT_FAMILIES),
+        any(tag in name for tag in ("preview", "exp", "latest")),
+        bool(re.search(r"-\d{4}(?:-\d{2}-\d{2})?$", name)),
+        -float(version.group()) if version else 0.0,
+        value,
+    )
+
+
+def listed_models(body, secret, prefix=""):
+    """Validate a model listing tolerantly. Returns (ids, skipped, truncated).
+
+    Invalid identifiers are counted and skipped; the listing is a protocol error only
+    when nothing valid remains. The registry prefix (Gemini's ``models/``) is stripped.
+    """
+    data = json.loads(body)
+    models = data.get("data") if isinstance(data, dict) else None
+    if not isinstance(models, list):
+        raise ValueError("Invalid model-list response")  # noqa: TRY004 - callers map to protocol_error
+    ids, skipped = set(), 0
+    for model in models:
+        identifier = model.get("id") if isinstance(model, dict) else None
+        if (
+            not isinstance(identifier, str)
+            or not MODEL_ID.fullmatch(identifier)
+            or secret in identifier
+        ):
+            skipped += 1
+            continue
+        if prefix and identifier.startswith(prefix):
+            identifier = identifier[len(prefix) :]
+        if not identifier:
+            skipped += 1
+            continue
+        ids.add(identifier)
+    if models and not ids:
+        raise ValueError("No valid model identifiers")
+    ordered = sorted(ids, key=model_rank)
+    return ordered[:MAX_MODEL_IDS], skipped, max(0, len(ordered) - MAX_MODEL_IDS)
+
+
+def generation_metadata(response):
+    """finish_reason, output_tokens and reply_chars, read transiently; no text is kept."""
+    result = {"finish_reason": None, "output_tokens": None, "reply_chars": None}
+    try:
+        data = json.loads(getattr(response, "body", b"") or b"null")
+    except (ValueError, UnicodeDecodeError):
+        return result
+    if not isinstance(data, dict):
+        return result
+    choices = data.get("choices")
+    choice = choices[0] if isinstance(choices, list) and choices else None
+    choice = choice if isinstance(choice, dict) else {}
+    reason = choice.get("finish_reason")
+    if isinstance(reason, str) and FINISH_REASON.fullmatch(reason):
+        result["finish_reason"] = reason
+    usage = data.get("usage")
+    tokens = usage.get("completion_tokens") if isinstance(usage, dict) else None
+    if isinstance(tokens, int) and not isinstance(tokens, bool) and tokens >= 0:
+        result["output_tokens"] = tokens
+    message = choice.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, str):
+        result["reply_chars"] = len(content)
+    return result
 
 
 class DoctorInput(BaseModel):
@@ -78,6 +185,11 @@ async def run_doctor(request, values):
         "source": "LOCAL",
         "models_source": "UNKNOWN",
     }
+    if values.mode == "generation":
+        result.update(finish_reason=None, output_tokens=None, reply_chars=None)
+    else:
+        result["skipped_ids"] = 0
+    provider = registry().get(credential["provider_id"])
     try:
         if values.mode == "generation":
             if not values.consent or values.position is None:
@@ -99,11 +211,14 @@ async def run_doctor(request, values):
             if not chosen["eligible"]:
                 result["outcome"] = chosen["skip_reason"]
             else:
+                # The registry names the token-limit field each provider accepts (GPT-5
+                # models reject max_tokens). No temperature or reasoning parameters are sent.
+                target = registry().get(chosen["provider_id"])
                 payload = json.dumps(
                     {
                         "model": "qm/" + values.profile,
                         "messages": [{"role": "user", "content": "Reply OK."}],
-                        "max_tokens": 16,
+                        (target.token_param if target else "max_tokens"): GENERATION_TOKENS,
                         "stream": False,
                     }
                 ).encode()
@@ -124,6 +239,8 @@ async def run_doctor(request, values):
                 )
                 result["http_status"] = response.status_code
                 result["outcome"] = "ok" if response.status_code < 300 else "generation_failed"
+                if response.status_code < 300:
+                    result.update(generation_metadata(response))
                 # Read only our metadata, never copy an upstream error/completion into diagnostics.
                 if result["request_id"]:
                     attempt = next(
@@ -160,7 +277,7 @@ async def run_doctor(request, values):
                         body = bytearray()
                         async for chunk in response.aiter_bytes():
                             body.extend(chunk)
-                            if len(body) > 1024 * 1024:
+                            if len(body) > MAX_LISTING_BYTES:
                                 raise ValueError("Model list exceeded the diagnostic size limit")
                         if 300 <= response.status_code < 400:
                             result["outcome"] = "redirect_blocked"
@@ -186,25 +303,17 @@ async def run_doctor(request, values):
                                     datetime.now(UTC),
                                 )
                         else:
-                            data = json.loads(body)
-                            models = data.get("data") if isinstance(data, dict) else None
-                            if not isinstance(models, list) or len(models) > 1000:
-                                raise ValueError("Invalid model-list response")
-                            ids = []
-                            for model in models:
-                                identifier = model.get("id") if isinstance(model, dict) else None
-                                if (
-                                    not isinstance(identifier, str)
-                                    or not re.fullmatch(r"[A-Za-z0-9_.:/@+~\-]{1,200}", identifier)
-                                    or secret in identifier
-                                ):
-                                    raise ValueError("Invalid model identifier")
-                                ids.append(identifier)
+                            ids, skipped, truncated = listed_models(
+                                bytes(body), secret, provider.model_list_prefix if provider else ""
+                            )
                             result.update(
                                 outcome="listing_ok",
-                                models=sorted(set(ids)),
+                                models=ids,
                                 models_source="PROVIDER",
+                                skipped_ids=skipped,
                             )
+                            if truncated:
+                                result["truncated_ids"] = truncated
                             with app.state.store.connection() as conn:
                                 conn.execute(
                                     """UPDATE credentials SET status='ACTIVE',status_reason=NULL

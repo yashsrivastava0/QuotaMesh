@@ -1,0 +1,177 @@
+{
+  "source": "live probe 2026-10-16",
+  "providers": {
+    "gemini": {
+      "auth": {
+        "compat_bearer": 200,
+        "compat_x-goog-api-key": 404,
+        "native_x-goog-api-key": 200
+      },
+      "invalid_key_status_bearer": 400,
+      "invalid_key_status_x-goog-api-key": 400,
+      "auth_style": "bearer",
+      "chosen_model": "gemini-3.5-flash-lite",
+      "model_count": 63,
+      "unknown_model_status": 404,
+      "cases": {
+        "nonstream": {
+          "status": 200,
+          "latency_ms": 28015,
+          "usage": {
+            "completion_tokens": 1,
+            "prompt_tokens": 8,
+            "total_tokens": 9
+          },
+          "finish_reason": "stop"
+        },
+        "stream_plain": {
+          "status": 200,
+          "latency_ms": 3928,
+          "done_marker": true,
+          "framing": "lf",
+          "usage_event_indexes": [],
+          "usage_event_choices": [],
+          "event_count": 3,
+          "finish_reasons": [
+            "stop"
+          ]
+        },
+        "stream_usage": {
+          "status": 200,
+          "latency_ms": 3153,
+          "done_marker": true,
+          "framing": "lf",
+          "usage_event_indexes": [
+            0,
+            1
+          ],
+          "usage_event_choices": [
+            1,
+            1
+          ],
+          "event_count": 3,
+          "finish_reasons": [
+            "stop"
+          ]
+        },
+        "models_prefix": {
+          "status": 200,
+          "latency_ms": 14713,
+          "usage": {
+            "completion_tokens": 1,
+            "prompt_tokens": 8,
+            "total_tokens": 9
+          },
+          "finish_reason": "stop"
+        },
+        "tool_stream": {
+          "status": 200,
+          "latency_ms": 6656,
+          "done_marker": true,
+          "framing": "lf",
+          "usage_event_indexes": [],
+          "usage_event_choices": [],
+          "event_count": 3,
+          "finish_reasons": [
+            "stop"
+          ]
+        },
+        "json_mode": {
+          "status": 503,
+          "latency_ms": 3987
+        }
+      }
+    },
+    "openai": {
+      "models_status": 200,
+      "model_count": 133,
+      "invalid_key_status": 401,
+      "chosen_model": "gpt-4.1-nano",
+      "unknown_model_status": 404,
+      "gpt5_max_tokens_status": 400,
+      "cases": {
+        "nonstream": {
+          "status": 200,
+          "latency_ms": 1125,
+          "usage": {
+            "prompt_tokens": 14,
+            "completion_tokens": 1,
+            "total_tokens": 15,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 0,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 0,
+              "rejected_prediction_tokens": 0
+            }
+          },
+          "finish_reason": "stop"
+        },
+        "stream_plain": {
+          "status": 200,
+          "latency_ms": 1322,
+          "done_marker": true,
+          "framing": "lf",
+          "usage_event_indexes": [],
+          "usage_event_choices": [],
+          "event_count": 4,
+          "finish_reasons": [
+            "stop"
+          ]
+        },
+        "stream_usage": {
+          "status": 200,
+          "latency_ms": 1247,
+          "done_marker": true,
+          "framing": "lf",
+          "usage_event_indexes": [
+            3
+          ],
+          "usage_event_choices": [
+            0
+          ],
+          "event_count": 5,
+          "finish_reasons": [
+            "stop"
+          ]
+        },
+        "tool_stream": {
+          "status": 200,
+          "latency_ms": 788,
+          "done_marker": true,
+          "framing": "lf",
+          "usage_event_indexes": [],
+          "usage_event_choices": [],
+          "event_count": 11,
+          "finish_reasons": [
+            "tool_calls"
+          ]
+        },
+        "json_mode": {
+          "status": 200,
+          "latency_ms": 1240,
+          "usage": {
+            "prompt_tokens": 16,
+            "completion_tokens": 5,
+            "total_tokens": 21,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 0,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 0,
+              "rejected_prediction_tokens": 0
+            }
+          },
+          "finish_reason": "stop"
+        }
+      }
+    }
+  },
+  "generation_calls": 11
+}

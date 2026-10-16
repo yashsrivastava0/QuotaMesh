@@ -1,0 +1,24 @@
+{
+  "source": "synthetic",
+  "note": "Code follows the 'Slow Down' entry in https://platform.openai.com/docs/guides/error-codes.",
+  "provider": "openai",
+  "case": "openai_slow_down",
+  "status": 429,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "error": {
+      "message": "A sudden increase in your request rate is impacting service reliability. Please reduce your request rate to its original level, maintain a consistent rate for at least 15 minutes, and then gradually increase it.",
+      "type": "requests",
+      "param": null,
+      "code": "slow_down"
+    }
+  },
+  "expect": {
+    "kind": "rate_limit",
+    "scope": "quota",
+    "state": "COOLDOWN",
+    "until": null
+  }
+}

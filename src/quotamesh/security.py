@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hmac
 import secrets
+import time
 from collections.abc import Awaitable, Callable
 from urllib.parse import urlsplit
 
@@ -63,14 +65,71 @@ def api_error(status: int, message: str, code: str) -> JSONResponse:
     )
 
 
+SESSION_LINK_TTL = 120  # seconds a CLI/browser login link stays usable
+MAX_PENDING_LINKS = 32  # expiring links kept at once; the printed link is never evicted
+
+
+def secret_matches(supplied: str | None, expected: str | None) -> bool:
+    """Constant-time comparison on UTF-8 bytes; any text (even non-ASCII) is a clean miss."""
+    if not supplied or not expected:
+        return False
+    return hmac.compare_digest(supplied.encode("utf-8", "replace"), expected.encode("utf-8"))
+
+
+def request_port(request: Request) -> int | None:
+    """The port the client addressed (from the validated loopback Host), if any."""
+    try:
+        return request.url.port
+    except ValueError:
+        return None
+
+
+def session_cookie_name(request: Request) -> str:
+    # Cookies ignore ports, so instances on different ports need distinct names.
+    port = request_port(request)
+    return f"qm_session_{port}" if port else "qm_session"
+
+
 def browser_authorized(request: Request) -> bool:
-    cookie = request.cookies.get("qm_session", "")
-    return bool(cookie) and secrets.compare_digest(cookie, request.app.state.session_token)
+    return secret_matches(
+        request.cookies.get(session_cookie_name(request)), request.app.state.session_token
+    )
 
 
 def bearer_authorized(request: Request) -> bool:
     scheme, _, value = request.headers.get("authorization", "").partition(" ")
-    return scheme.lower() == "bearer" and secrets.compare_digest(value, request.app.state.local_key)
+    return scheme.lower() == "bearer" and secret_matches(value, request.app.state.local_key)
+
+
+def mint_bootstrap_token(app, ttl: float | None = SESSION_LINK_TTL) -> str:
+    """Create a single-use login token; ``ttl=None`` never expires (the printed link)."""
+    tokens = app.state.bootstrap_tokens
+    now = time.monotonic()
+    for token, expiry in list(tokens.items()):
+        if expiry is not None and expiry <= now:
+            tokens.pop(token, None)
+    pending = sorted((expiry, token) for token, expiry in tokens.items() if expiry is not None)
+    while len(pending) >= MAX_PENDING_LINKS:
+        tokens.pop(pending.pop(0)[1], None)
+    token = secrets.token_urlsafe(32)
+    tokens[token] = None if ttl is None else now + ttl
+    return token
+
+
+def consume_bootstrap_token(app, supplied: str | None) -> bool:
+    """Use a login token once. Expired or unknown tokens fail; a matched token is spent."""
+    state = app.state
+    candidates = list(state.bootstrap_tokens.items())
+    printed = getattr(state, "bootstrap_token", None)
+    if printed and printed not in state.bootstrap_tokens:
+        candidates.append((printed, None))  # Assigned directly (older callers and scripts).
+    for token, expiry in candidates:
+        if secret_matches(supplied, token):
+            state.bootstrap_tokens.pop(token, None)
+            if token == printed:
+                state.bootstrap_token = None
+            return expiry is None or expiry > time.monotonic()
+    return False
 
 
 def management_authorized(request: Request) -> bool:

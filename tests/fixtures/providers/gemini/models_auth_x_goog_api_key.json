@@ -1,0 +1,16 @@
+{
+  "source": "live probe 2026-10-16",
+  "provider": "gemini",
+  "case": "models_auth_x_goog_api_key",
+  "status": 404,
+  "headers": {
+    "content-type": "application/json; charset=UTF-8"
+  },
+  "body": {
+    "error": {
+      "code": 404,
+      "message": "Requested entity was not found.",
+      "status": "NOT_FOUND"
+    }
+  }
+}

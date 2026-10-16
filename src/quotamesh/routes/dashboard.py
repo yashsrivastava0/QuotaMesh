@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import functools
 import hashlib
-import secrets
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -11,18 +11,20 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from quotamesh.config import registry, validate_base_url, validate_env_name
 from quotamesh.credentials import CredentialCreate
 from quotamesh.engine.classify import valid_price
-from quotamesh.policy import CredentialAction, Policy, expiry
+from quotamesh.policy import CredentialAction, Money, Policy, expiry
 from quotamesh.routing import decision_snapshot
 from quotamesh.security import (
     api_error,
     browser_authorized,
     configuration_error,
+    consume_bootstrap_token,
     management_authorized,
+    session_cookie_name,
 )
 from quotamesh.store import DuplicateCredential
 from quotamesh.usage import summarize
@@ -31,51 +33,77 @@ router = APIRouter()
 UI = Path(__file__).parents[1] / "ui"
 templates = Jinja2Templates(directory=str(UI / "templates"))
 
+# Navigation order; the title is also the navigation label.
 PAGES = {
-    "/": ("overview", "Overview", "Your API access, grouped by the capacity you own."),
-    "/access": ("access", "API access", "Save a provider key or an environment reference."),
+    "/": ("overview", "Overview", "Your API keys, today's usage, and what to do next."),
+    "/start": (
+        "start",
+        "Get started",
+        "Add an API key, check it, create qm/default, and send a first message.",
+    ),
+    "/access": ("access", "API keys", "Save provider API keys or environment references."),
     "/profiles": (
         "profiles",
         "Profiles",
         "Choose exact models, target order, and spending rules for each app.",
     ),
-    "/route": ("route", "Route & test", "Inspect your saved rules before sending a request."),
+    "/playground": (
+        "playground",
+        "Playground",
+        "Chat with a saved profile and see which provider answered, with tokens, timing and cost.",
+    ),
+    "/route": (
+        "route",
+        "Route preview",
+        "See which target answers next and why others are skipped, without calling a provider.",
+    ),
     "/connect": ("connect", "Connect", "Use one local endpoint with your app’s saved profile."),
     "/activity": (
         "activity",
         "Activity",
         "Follow requests and fallback attempts. Only metadata is retained.",
     ),
-    "/help": ("help", "How QuotaMesh works", "Understand the process and choose your next step."),
     "/help/doctor": (
         "doctor",
         "Diagnostics",
-        "Run a model listing or explicitly test one saved target.",
+        "List a key's models or explicitly test one saved target.",
     ),
     "/help/catalog": (
         "catalog",
-        "Provider catalog",
+        "Providers",
         "Official documentation and access links from the dated registry.",
     ),
+    "/help": ("help", "Help", "How QuotaMesh works, what the numbers mean, and the words used."),
 }
 
 
+@functools.lru_cache(maxsize=64)
+def _asset_digest(name: str, mtime_ns: int, size: int) -> str:
+    # Keyed by modification time and size, so an edited asset gets a new digest
+    # without hashing every bundled file on every page render.
+    return hashlib.sha256((UI / "static" / name).read_bytes()).hexdigest()[:12]
+
+
 def asset_url(name: str) -> str:
-    digest = hashlib.sha256((UI / "static" / name).read_bytes()).hexdigest()[:12]
-    return f"/static/{name}?v={digest}"
+    info = (UI / "static" / name).stat()
+    return f"/static/{name}?v={_asset_digest(name, info.st_mtime_ns, info.st_size)}"
 
 
 def _dashboard_context(request: Request, *, error: str | None = None) -> dict[str, Any]:
     store = request.app.state.store
     slug = request.query_params.get("profile", "default")
     page, title, description = PAGES.get(request.url.path, PAGES["/"])
+    profiles = store.profiles()
+    routing = store.safe_routing(datetime.now(UTC), slug)
     return {
         "page": page,
         "page_title": title,
         "page_description": description,
-        "page_nav": [(path, values[1]) for path, values in PAGES.items() if path.count("/") <= 1],
+        "page_nav": [(path, values[1]) for path, values in PAGES.items()],
+        # "Get started" stays prominent until a profile can route (named profiles need targets).
+        "configured": bool(routing["targets"]) or any(p["slug"] != "default" for p in profiles),
         "selected_profile": slug,
-        "profiles": store.profiles(),
+        "profiles": profiles,
         "asset_url": asset_url,
         "demo_scenarios": [(key, values[0]) for key, values in _demo_scenarios().items()],
         "demo_scenario": getattr(request.app.state, "demo_scenario", "wallet"),
@@ -84,7 +112,7 @@ def _dashboard_context(request: Request, *, error: str | None = None) -> dict[st
         "gateway_base": str(request.base_url).rstrip("/") + "/v1",
         "demo_mode": getattr(request.app.state, "demo_mode", False),
         "error": error,
-        "routing": store.safe_routing(datetime.now(UTC), slug),
+        "routing": routing,
         "decisions": decision_snapshot(request.app, slug)[0] if page == "overview" else [],
     }
 
@@ -177,22 +205,53 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+LINK_USED = (
+    "This login link was already used or has expired. "
+    "Run <code>quotamesh open</code> to get a new one."
+)
+DASHBOARD_LOCKED = (
+    "This browser is not signed in to the local dashboard, or its session ended when "
+    "QuotaMesh restarted. Run <code>quotamesh open</code> to get a new login link."
+)
+
+
+def login_page(status: int, message: str) -> HTMLResponse:
+    """A small static page (no scripts or inline styles) with the way back in."""
+    return HTMLResponse(
+        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        "<title>Sign in · QuotaMesh</title></head><body><main>"
+        f"<h1>QuotaMesh</h1><p>{message}</p></main></body></html>",
+        status_code=status,
+        headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
+    )
+
+
 @router.get("/bootstrap")
 def bootstrap(request: Request, token: str = "") -> Response:
-    state = request.app.state
-    if not state.bootstrap_token or not secrets.compare_digest(token, state.bootstrap_token):
-        return api_error(403, "Bootstrap link is invalid or has already been used", "forbidden")
-    state.bootstrap_token = None
-    response = RedirectResponse("/", status_code=303)
+    if browser_authorized(request):
+        # Already signed in: keep the link usable (for example in another browser).
+        return RedirectResponse("/", status_code=303)
+    if not consume_bootstrap_token(request.app, token):
+        return login_page(403, LINK_USED)
+    response = RedirectResponse(
+        "/", status_code=303, headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
+    )
     response.set_cookie(
-        "qm_session", state.session_token, httponly=True, samesite="strict", path="/"
+        session_cookie_name(request),
+        request.app.state.session_token,
+        httponly=True,
+        samesite="strict",
+        path="/",
     )
     return response
 
 
 @router.get("/", response_class=HTMLResponse)
+@router.get("/start", response_class=HTMLResponse)
 @router.get("/access", response_class=HTMLResponse)
 @router.get("/profiles", response_class=HTMLResponse)
+@router.get("/playground", response_class=HTMLResponse)
 @router.get("/route", response_class=HTMLResponse)
 @router.get("/connect", response_class=HTMLResponse)
 @router.get("/activity", response_class=HTMLResponse)
@@ -201,10 +260,7 @@ def bootstrap(request: Request, token: str = "") -> Response:
 @router.get("/help/catalog", response_class=HTMLResponse)
 def home(request: Request) -> Response:
     if not browser_authorized(request):
-        return HTMLResponse(
-            "Local dashboard locked. Open the bootstrap URL printed by `quotamesh start`.",
-            status_code=401,
-        )
+        return login_page(401, DASHBOARD_LOCKED)
     slug = request.query_params.get("profile", "default")
     if slug != "default" and not any(p["slug"] == slug for p in request.app.state.store.profiles()):
         return HTMLResponse(
@@ -284,9 +340,17 @@ async def add_credential(request: Request):
 
 
 class InitialSetup(BaseModel):
+    """First-run default profile. Spend fields use the Policy limits; paid stays off by default."""
+
     model_config = ConfigDict(extra="forbid")
     credential_id: int = Field(ge=1)
     model: str = Field(min_length=1, max_length=200)
+    allow_paid: bool = False
+    paid_daily_cap_usd: Money | None = None
+    paid_monthly_cap_usd: Money | None = None
+    input_price: Money | None = None  # USD per million tokens, for the created target
+    output_price: Money | None = None
+    allow_unknown_price: bool = False
 
 
 @router.post("/api/setup")
@@ -297,16 +361,20 @@ async def initial_setup(request: Request):
         values = InitialSetup.model_validate(await request.json())
         if any(ord(c) < 32 or ord(c) == 127 for c in values.model):
             raise TypeError("Invalid model")
-        request.app.state.store.setup_default(values.credential_id, values.model)
+        request.app.state.store.setup_default(
+            values.credential_id, values.model, **values.model_dump(exclude={"credential_id", "model"})
+        )
     except LookupError:
         return api_error(404, "Credential not found", "credential_not_found")
+    except ValidationError as exc:
+        return configuration_error(exc)  # Field paths and fixed advice; inputs never echoed.
     except (TypeError, AttributeError):
         return api_error(400, "Choose a saved credential and model", "invalid_configuration")
     except ValueError as exc:
         if str(exc).startswith("Default is already"):
             return api_error(409, str(exc), "setup_conflict")
         return api_error(400, "Choose a saved credential and model", "invalid_configuration")
-    return JSONResponse({"alias": "qm/default", "allow_paid": False}, status_code=201)
+    return JSONResponse({"alias": "qm/default", "allow_paid": values.allow_paid}, status_code=201)
 
 
 @router.post("/api/policy")

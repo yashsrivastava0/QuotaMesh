@@ -4,6 +4,26 @@ This implementation follows the MVP PDF and ROADMAP. It serves developers who
 already have API access. Guidance is built into the app and makes no AI calls.
 There are no new API protocols, schema migrations, or runtime dependencies.
 
+## Live-readiness additions (2026-10-16)
+
+- Navigation follows the setup journey: Overview · Get started (prominent until a profile can
+  route) · API keys · Profiles · Playground · Route preview · Connect · Activity · Diagnostics ·
+  Providers · Help, with exactly one `aria-current` link.
+- **Get started** `/start`: paste or choose a `.env` (parsed by the local server; values never come
+  back), confirm plans, import; or enter one key; list models per key; Free only or paid backup
+  with a cap and prices; create `qm/default`; send a first streamed message.
+- **Playground** `/playground`: multi-turn chat held only in the page, stream toggle,
+  `max_completion_tokens`, Stop, a metadata strip from `X-QuotaMesh-*` headers and usage, the
+  server attempt trace when available, and plain explanations with fix links for every gateway
+  error code. The Route quick test reuses the same SSE reader.
+- **Overview** shows Today tiles and a 14-day chart from `wallet.daily` (table view included).
+  **Connect** copies the local key to the clipboard without rendering it.
+- Initial reads: Get started 2 (status, doctor), Profiles 2 (status, doctor), Playground 1
+  (explain); other pages are unchanged below.
+- Browser smoke adds the fake-`.env` setup (provider URLs answered in-process by the bundled
+  fake, so no network or real key), Playground stream and non-stream replies and error
+  explanations, the chart, and copy-key with clipboard granted and denied.
+
 ## Pages, features, and user stories
 
 The saved profile is carried in `?profile=<slug>` across navigation. An editor
@@ -136,5 +156,14 @@ Screenshots, recordings, temporary keys, and package output are ignored by Git.
 - Synthetic walkthrough recording completed. Interactive Edge review confirmed
   the light overview and navigation to Route & test.
 
-These results cover synthetic local traffic. Live provider accounts and remote
-macOS/Linux CI were not exercised during this frontend task.
+These results cover synthetic traffic. Live provider accounts were not exercised.
+
+### CI follow-up (2026-10-08)
+
+The merged frontend's CI passed the eight Windows/macOS/Linux Python jobs and
+installed-wheel client checks. Browser acceptance failed because the copy check
+read its status before the asynchronous clipboard operation completed. The
+follow-up waits for the completion state, verifies actual clipboard contents with
+explicit test permission, and separately simulates delayed permission rejection
+to verify selection and focus for manual copying. This changes the test harness;
+the application's existing copy fallback is preserved.

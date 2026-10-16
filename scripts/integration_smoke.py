@@ -24,6 +24,34 @@ from quotamesh.demo import app as fake_app
 from quotamesh.demo import configure_demo
 
 
+def find_bash():
+    """Return a real Bash: PATH first, then the usual Git for Windows locations.
+
+    On Windows, ``bash`` on PATH is often the WSL launcher in System32 (or a WindowsApps
+    alias). It cannot see this process's tools, so it is skipped in favour of Git Bash.
+    """
+    candidates = [shutil.which("bash")]
+    if os.name == "nt":
+        git = shutil.which("git")
+        if git:
+            # C:\Program Files\Git\cmd\git.exe -> C:\Program Files\Git\bin\bash.exe
+            root = Path(git).resolve().parent
+            candidates += [str(root.parent / "bin/bash.exe"), str(root.parents[1] / "bin/bash.exe")]
+        for variable in ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)", "LOCALAPPDATA"):
+            base = os.environ.get(variable)
+            if base:
+                candidates += [str(Path(base) / "Git/bin/bash.exe")]
+                candidates += [str(Path(base) / "Programs/Git/bin/bash.exe")]
+    for candidate in candidates:
+        if not candidate or not Path(candidate).is_file():
+            continue
+        parts = {part.lower() for part in Path(candidate).resolve().parts}
+        if os.name == "nt" and parts & {"system32", "windowsapps"}:
+            continue
+        return candidate
+    return None
+
+
 def run(command, environment, directory):
     result = subprocess.run(
         command,
@@ -45,7 +73,8 @@ def main():
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
-    with TemporaryDirectory(prefix="quotamesh-sdk-") as directory:
+    # Windows can briefly hold SQLite files open after the server thread stops.
+    with TemporaryDirectory(prefix="quotamesh-sdk-", ignore_cleanup_errors=True) as directory:
         app = create_app(Path(directory))
         app.state.demo_mode = True
         app.state.demo_base_url = f"http://127.0.0.1:{port}/demo-upstream/v1"
@@ -97,10 +126,8 @@ print(''.join(chunk.choices[0].delta.content or '' for chunk in stream if chunk.
                 node_file.write_text(templates["snippets"]["node"], encoding="utf-8")
                 run(["node", str(node_file)], environment, node_dir)
                 verified.append("Node OpenAI SDK")
-                bash = (
-                    shutil.which("bash") if os.name != "nt" else "C:/Program Files/Git/bin/bash.exe"
-                )
-                assert bash and Path(bash).exists(), "A real Bash runtime is required"
+                bash = find_bash()
+                assert bash, "A real Bash runtime is required (on Windows, install Git for Windows)"
                 run(
                     [
                         bash,

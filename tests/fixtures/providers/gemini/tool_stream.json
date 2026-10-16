@@ -1,0 +1,81 @@
+{
+  "source": "live probe 2026-10-16",
+  "provider": "gemini",
+  "case": "tool_stream",
+  "request": {
+    "path": "/chat/completions",
+    "fields": [
+      "max_completion_tokens",
+      "messages",
+      "model",
+      "stream",
+      "tool_choice",
+      "tools"
+    ],
+    "model": "gemini-3.5-flash-lite",
+    "stream": true
+  },
+  "status": 200,
+  "latency_ms": 6656,
+  "headers": {
+    "content-type": "text/event-stream"
+  },
+  "framing": "lf",
+  "events": [
+    {
+      "data": {
+        "choices": [
+          {
+            "delta": {
+              "role": "assistant",
+              "tool_calls": [
+                {
+                  "extra_content": {
+                    "google": {
+                      "thought_signature": "<redacted>"
+                    }
+                  },
+                  "function": {
+                    "arguments": "<redacted>",
+                    "name": "get_order_status"
+                  },
+                  "id": "<id>",
+                  "type": "function"
+                }
+              ]
+            },
+            "index": 0
+          }
+        ],
+        "created": 0,
+        "id": "<id>",
+        "model": "gemini-3.5-flash-lite",
+        "object": "chat.completion.chunk"
+      }
+    },
+    {
+      "data": {
+        "choices": [
+          {
+            "delta": {
+              "role": "assistant"
+            },
+            "finish_reason": "stop",
+            "index": 0
+          }
+        ],
+        "created": 0,
+        "id": "<id>",
+        "model": "gemini-3.5-flash-lite",
+        "object": "chat.completion.chunk"
+      }
+    },
+    "[DONE]"
+  ],
+  "done_marker": true,
+  "usage_event_indexes": [],
+  "usage_event_choices": [],
+  "finish_reasons": [
+    "stop"
+  ]
+}

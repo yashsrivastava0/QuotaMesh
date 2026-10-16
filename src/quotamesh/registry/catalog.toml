@@ -4,9 +4,9 @@ id = "gemini"
 name = "Google Gemini"
 docs_url = "https://ai.google.dev/gemini-api/docs/openai"
 signup_url = "https://aistudio.google.com/apikey"
-access_note = "Review current free and paid access in your project. OpenAI compatibility is a separate API surface."
-compatibility = "Generic transport with tested classifier fixtures"
-last_verified = "2026-10-07"
+access_note = "Review current free and paid access in your project. AI Studio now issues keys in the AQ. format; QuotaMesh accepts them. Daily limits reset at Pacific midnight."
+compatibility = "Live-verified Chat Completions (OpenAI compatibility endpoint, Bearer auth)"
+last_verified = "2026-10-16"
 
 [[entries]]
 id = "groq"
@@ -23,8 +23,8 @@ name = "OpenAI"
 docs_url = "https://developers.openai.com/api/docs/"
 signup_url = "https://platform.openai.com/api-keys"
 access_note = "Review API billing and model permissions. QuotaMesh treats your declared plan separately from provider billing."
-compatibility = "Chat Completions transport with tested classifier fixtures"
-last_verified = "2026-10-07"
+compatibility = "Live-verified Chat Completions transport"
+last_verified = "2026-10-16"
 
 [[entries]]
 id = "nim"

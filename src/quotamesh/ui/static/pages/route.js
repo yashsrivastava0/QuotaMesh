@@ -10,11 +10,7 @@ function renderDecisions(decisions) {
     text.append(node('small', decision.eligible ? `Allowed by saved rules · ${planName(decision.plan_type)} · provider quota not checked` : decision.explanation || reasons[decision.skip_reason] || decision.skip_reason));
     if (decision.recovery_at) text.append(node('small', 'Recovery (UTC): '+decision.recovery_at));
     if (decision.recovery_action) {
-      const action=decision.recovery_action;
-      const access=['add_access','rotate_access','review_expiry','review_environment'];
-      const destination=access.includes(action.code) ? '/access' : ['wait','diagnose_access'].includes(action.code) ? '/help/doctor' : action.code === 'repair_accounting' ? '/help' : '/profiles';
-      const link=node('a',action.label+' →','text-link');link.href=profileUrl(destination);
-      if(destination==='/access' && action.credential_id)link.href+='&credential='+action.credential_id;
+      const link=node('a',recoveryLabel(decision.recovery_action,decision),'text-link');link.href=recoveryHref(decision.recovery_action,decision);
       text.append(link);
     }
     row.append(text); $('#decisions').append(row);
@@ -40,18 +36,10 @@ $('#test-form').onsubmit = async event => {
       try { const body = JSON.parse(text); $('#test-output').textContent = body?.choices?.[0]?.message?.content || JSON.stringify(body, null, 2); }
       catch { $('#test-output').textContent = text || 'Empty upstream response.'; }
     } else {
-      const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = '';
-      while (true) {
-        const {value, done} = await reader.read(); if (done) break;
-        buffer += decoder.decode(value, {stream: true}).replace(/\r\n/g, '\n');
-        let end;
-        while ((end = buffer.indexOf('\n\n')) >= 0) {
-          const eventText = buffer.slice(0,end); buffer = buffer.slice(end+2);
-          const data = eventText.split('\n').filter(line => line.startsWith('data:')).map(line => line.slice(5).trimStart()).join('\n');
-          if (!data || data === '[DONE]') continue;
-          try { const payload = JSON.parse(data); if (payload.error) { $('#test-output').textContent += '\nStream error: '+(payload.error.message || 'Upstream error'); $('#test-summary').textContent += ' · interrupted after commitment'; } else { $('#test-output').textContent += payload.choices?.[0]?.delta?.content || ''; } } catch { $('#test-output').textContent += '\n[Unrecognized upstream event]'; }
-        }
-      }
+      // Shared reader: CRLF framing, multi-line data, `event: error`, usage-only chunks.
+      const result = await consumeChatStream(response, partial => { $('#test-output').textContent = partial.content; });
+      if (result.error) { $('#test-output').textContent = result.content+'\nStream error: '+(result.error.message || 'Upstream error'); $('#test-summary').textContent += ' · interrupted after commitment'; }
+      if (result.unrecognized) $('#test-output').textContent += '\n[Unrecognized upstream event]';
     }
   } catch (error) { $('#test-summary').textContent = error.name === 'AbortError' ? 'Request stopped. Upstream cancellation recorded when detected.' : error.message; }
   finally { controller = null; $('#cancel-test').hidden = true; await refresh().catch(error => notice(error.message, true)); form.querySelector('[type="submit"]').disabled = false; }

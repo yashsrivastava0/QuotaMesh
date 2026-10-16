@@ -4,366 +4,347 @@
 
 <img src="docs/assets/quotamesh-banner.svg" alt="QuotaMesh: local AI capacity with clear project rules" width="100%">
 
-### Your local AI API capacity gateway
+### One local endpoint for the AI API keys you already have
 
-Use the API access you already own through one local endpoint, with explicit order and safe fallback.
-
-[Quick start](#quick-start) · [No-key demo](#test-without-api-keys) · [Routing rules](#how-routing-works) · [Credentials](#what-you-need-for-real-provider-testing) · [Development](#development)
+[Quick start](#quick-start-5-minutes) · [.env import](#import-keys-from-a-env-file) · [Routing](#how-routing-works) · [Paid guard](#paid-guard-caps-and-cost) · [Examples](examples/README.md) · [Troubleshooting](#troubleshooting) · [Development](#development-and-tests)
 
 </div>
 
-**Current scope: finalized MVP, phases one through five (v0.1.0).** QuotaMesh has an authenticated localhost
-Chat Completions gateway, deterministic fallback, shared cooldowns, expiry and paid caps,
-a grouped FREE/TRIAL/PAID Capacity Wallet, editable credentials, named Project Profiles,
-durable local usage with expandable metadata-only history, Available Now/Explain Route,
-generated integration snippets, on-demand Doctor, environment import, and a dated Access Catalog. Existing `qm/default`
-clients keep working; each new project uses `qm/<slug>`. This is a local developer utility with explicit compatibility boundaries.
+## In 60 seconds
 
-QuotaMesh does not create capacity, bypass limits, or make paid calls free. Counts and
-balances cover traffic through this gateway; provider quota stays unknown. Phase five finalizes release packaging, platform QA, documentation, and frontend polish. No live-provider readiness is implied.
+QuotaMesh runs on your machine and gives every project the same OpenAI-compatible base
+URL, `http://127.0.0.1:8787/v1`. Behind it you register the API keys you own (OpenAI,
+Google Gemini, Groq, NVIDIA NIM and other OpenAI-compatible providers) and describe each
+project as a **profile**: an ordered list of exact provider/model targets.
 
-## Quick start
+- Your app sends a normal Chat Completions request with `model: "qm/<profile>"`.
+- QuotaMesh tries the profile's targets in order. If a target is rate limited, rejects
+  its key, does not know the model or fails before the first response byte, the next
+  target answers. Response headers and the Activity page show which one served it.
+- Paid and unknown-plan keys stay **off** until a profile explicitly allows them, with
+  optional local daily and monthly dollar caps.
+- Everything is local: one process on loopback, SQLite, no telemetry. Prompts and replies
+  are never stored; history holds metadata only.
 
-Python **3.11+**, one process, loopback only. No Docker, Redis, database server, or frontend build.
+QuotaMesh does not create quota, bypass provider limits or make paid calls free. It counts
+only traffic that passes through it, so provider balances and remaining quota stay unknown.
 
-```sh
-git clone https://github.com/yashsrivastava0/QuotaMesh.git
-cd QuotaMesh
-python3 -m venv .venv
-.venv/bin/python -m pip install -e .
-.venv/bin/quotamesh start
-```
+## Quick start (5 minutes)
 
-On Windows, use the equivalent `.venv\Scripts\` commands. The CLI prints a one-time
-dashboard link; opening it creates an HttpOnly, SameSite Strict browser session and
-redirects to a clean URL. The default port is 8787.
+You need Python 3.11 or newer.
 
-In the dashboard:
-
-Use the separate **Overview**, **API access**, **Profiles**, **Route & test**,
-**Connect**, and **Activity** pages. **How QuotaMesh works** explains the process
-and links to Doctor and the dated catalog. The selected saved profile follows
-navigation; unsaved access/profile edits offer Save, Discard, or Stay.
-See [features, user stories, journeys, and synthetic acceptance data](docs/frontend-experience.md).
-
-1. **Add API access.** Choose a provider, plan, and either a secret or an environment
-   reference. Label is optional; custom endpoints also need a base URL. No model is
-   needed to save a credential. **Save as untested** makes no provider call; **Save and test
-   listing access** explicitly contacts `/models` without generating a response.
-2. **Review My AI Capacity.** Shared provider/quota groups appear once with their keys,
-   observed usage, expiry, model states and source badges. Starting dollar credit is
-   manual; estimated remaining credit is local, never a live provider balance.
-3. **Save a Project Profile.** Keep default or create a name and immutable slug. Choose
-   exact provider/model targets, key pools or pinned keys, order, permissions, and caps.
-   Templates only edit the form; inspect and save the explicit result. Paid starts off.
-4. **Explain and connect.** Available Now shows the saved policy's eligible and skipped
-   candidates, paid-cap evidence, and recovery times. Connect generates Python, Node,
-   cURL/PowerShell, environment and OpenCode instructions for the selected saved profile.
-5. **Test and inspect.** The dry run makes no network call. An explicit test follows the
-   selected saved profile and can spend real quota when allowed. Expand its history to
-   see ordered attempts and skips; prompts and responses are never saved there.
-
-Doctor lists models or tests exactly one selected profile target. Generation requires an
-explicit quota-use action and obeys the saved paid rules; it never falls back to another
-key. Listing success does not prove generation permissions or remaining quota.
-
-To update an existing checkout, run `git switch main` and `git pull --ff-only` before
-installing. Back up your data directory before upgrading; schema v1/v2/v3/v4 migrates to v5.
-
-## Test without API keys
+**1. Install.** With [uv](https://docs.astral.sh/uv/):
 
 ```sh
-.venv/bin/quotamesh demo
+uv tool install quotamesh        # or run once without installing: uvx quotamesh start
 ```
 
-The demo runs on **127.0.0.1:8788**, prints a one-time dashboard link, uses temporary
-data, mounts a local fake provider, and deletes its store on exit. It starts with free,
-trial and paid sources, two trial keys sharing one $20 credit balance, and named profiles.
-Use the test panel; dollars, expiry and responses here are simulated. Doctor model listing
-is simulated too. The CLI prints an isolated `key --data-dir` command; Connect uses that
-command in the demo environment snippet instead of reading your normal gateway key.
+or with pip (PowerShell shown first, then bash):
 
-| Scenario | What to observe |
-| --- | --- |
-| Mixed wallet + profiles | One shared trial source with two keys; route `paid-backup` to observe $0.60 and a $19.40 local estimate. `free-app` permits free access only. |
-| Rate limit → free backup | Two upstream attempts; persisted cooldown; next request selects the backup directly. |
-| Paid guard | Both free sources fail; paid stays blocked. |
-| Paid cap | Paid explicitly enabled; $0.60 per call reaches/overshoots the $1 daily cap, then blocks. |
-| Shared project | One 429 blocks its sibling for the same group/model; one upstream attempt. |
-| First SSE error | Enable streaming; pre-commit failure falls back. |
-| Mid-stream cut | Enable streaming; one committed provider, then interruption with no fallback. |
+```powershell
+python -m pip install quotamesh
+```
 
-Loading a scenario resets only this temporary demo's profiles, history, rollups and quota
-state. `quotamesh key` reads your normal data directory, not the temporary demo's key.
-For a separate fake provider, run `.venv/bin/quotamesh fake-upstream` on port 8799; use
-Custom, `http://127.0.0.1:8799/v1`, FREE, any fake model and a secret such as `fake-200`,
-`fake-429-short` or `fake-401`.
+```sh
+python3 -m pip install quotamesh
+```
+
+> The PyPI release 0.1.0 predates the Get started page, the Playground, `.env` import and
+> `quotamesh open` described below. Until the next release, install from a checkout:
+> `python -m pip install -e .` in a clone of this repository.
+
+**2. Start it.**
+
+```sh
+quotamesh start
+```
+
+It prints a one-time sign-in link and opens your browser. The link works once; if it was
+already used or the browser lost the session, run `quotamesh open` for a fresh link.
+
+**3. Get started page.** Paste the contents of your `.env` file (or add a single key).
+QuotaMesh previews the variable names it recognizes, the provider and a suggested plan for
+each key, and never shows the values. Confirm each plan: Gemini keys usually start as
+FREE, OpenAI keys as PAID. Then pick a model from the key's model list. This saves the
+`qm/default` profile with paid access off; no generation request is sent.
+
+**4. Playground.** Send a prompt through `qm/default` exactly as an app would. The reply
+comes with its route evidence: provider, model, attempts, fallback and tokens.
+
+**5. Connect your app.** The Connect page prints the environment setup and a client
+snippet for the selected profile (Python, Node, cURL or PowerShell, OpenCode). For example:
+
+```powershell
+$env:QUOTAMESH_BASE_URL = "http://127.0.0.1:8787/v1"
+$env:QUOTAMESH_MODEL = "qm/default"
+$env:QUOTAMESH_KEY = (quotamesh key | Out-String).Trim()
+```
+
+```sh
+export QUOTAMESH_BASE_URL="http://127.0.0.1:8787/v1"
+export QUOTAMESH_MODEL="qm/default"
+export QUOTAMESH_KEY="$(quotamesh key)"
+```
+
+```python
+import os
+from openai import OpenAI
+
+client = OpenAI(base_url=os.environ["QUOTAMESH_BASE_URL"],
+                api_key=os.environ["QUOTAMESH_KEY"], max_retries=0)
+reply = client.chat.completions.create(
+    model=os.environ["QUOTAMESH_MODEL"],
+    messages=[{"role": "user", "content": "Hello"}],
+)
+print(reply.choices[0].message.content)
+```
+
+`quotamesh key` prints the **local gateway key**. It only unlocks your local QuotaMesh;
+provider keys never leave the server. Use `max_retries=0` so QuotaMesh, not the SDK,
+decides about retries and fallback. The [examples](examples/README.md) show a streaming
+chat, tool calling and JSON mode from a small "user project".
+
+No keys yet? Run `quotamesh demo` for a fake-provider sandbox ([below](#try-it-without-keys)).
+
+## Import keys from a .env file
+
+QuotaMesh reads plain `NAME=value` lines (optional `export`, quotes and comments). It never
+expands variables or runs anything, and files are limited to 64 KiB and 1000 lines.
+
+| Recognized names | Provider | Suggested plan |
+| --- | --- | --- |
+| `OPENAI_API_KEY` | OpenAI | PAID |
+| `GEMINI_API_KEY`, `GOOGLE_API_KEY` | Google Gemini | FREE |
+| `GROQ_API_KEY` | Groq | FREE |
+| `NVIDIA_API_KEY` | NVIDIA NIM | TRIAL_CREDIT |
+| `ANTHROPIC_API_KEY`, `XAI_API_KEY`, `OPENROUTER_API_KEY`, `CEREBRAS_API_KEY`, `MISTRAL_API_KEY` | compatibility presets | UNKNOWN |
+
+Add `_2`, `_3`, ... (for example `GEMINI_API_KEY_2`) for several keys of one provider.
+Placeholders such as `your_key_here` are skipped, and a value repeated under another name
+is reported as a duplicate. Suggestions are only suggestions: you confirm every plan, and
+PAID or UNKNOWN keys still need a profile that allows paid use.
+
+From the command line, against a running QuotaMesh:
+
+```sh
+quotamesh import-env --file .env                                   # preview, then confirm
+quotamesh import-env --file .env --plan OPENAI_API_KEY=PAID --yes  # no prompt
+quotamesh import-env --file .env --store reference                 # keep only variable names
+```
+
+`--store value` (the default) saves key values in the local database, like pasting a key
+in the dashboard. `--store reference` saves only the variable name; the server process then
+needs that variable, for example by starting it with `quotamesh start --env-file .env`.
+Keys of one provider project share one quota; give keys from different projects
+different quota groups on the API keys page so one rate limit does not pause the others.
+[`.env.example`](.env.example) is a template; `.env` is git-ignored.
 
 ## How routing works
 
 ```mermaid
 flowchart LR
-    Client[Local client / qm/profile] --> Auth[Host / origin / bearer checks]
-    Auth --> Select[Shared pure candidate selector]
-    Rules[Saved order / pools / policy] --> Select
-    State[SQLite cooldowns / expiry / paid spend] --> Select
+    Client[Your app, model qm/profile] --> Auth[Loopback, Host/Origin and key checks]
+    Auth --> Select[Candidate selector]
+    Rules[Profile: ordered targets, pools, paid rules] --> Select
+    State[SQLite: cooldowns, invalid keys, spend] --> Select
     Select --> Attempt[Next eligible target]
-    Attempt -->|retryable failure before commitment| Classify[Classify body + status + headers]
+    Attempt -->|failure before the first response byte| Classify[Classify status + body + headers]
     Classify --> State
     Classify --> Select
-    Attempt -->|valid JSON or first valid SSE response event| Commit[Commit and pass through]
-    Commit --> History[Metadata history / durable usage]
-    Dry[Dashboard dry run] --> Select
+    Attempt -->|valid JSON or first valid stream event| Commit[Pass through unchanged]
+    Commit --> History[Metadata-only history and usage]
 ```
 
-- Targets follow saved order. Pools use ascending priority, then credential ID.
-- Skips do not consume the attempt budget. No same-key/model retry or waiting through
-  cooldowns. Default budget: five upstream attempts, 45 seconds total non-stream time,
-  or 30 seconds total to the first valid stream response; stream idle timeout: 60 seconds.
-- Auth/revoked-key failures invalidate the credential. Billing/account failures mark it
-  unusable. Model access 403 blocks that key/model briefly; 404 and network/5xx failures
-  temporarily block the provider/model. Generic malformed 400/422 requests are returned
-  as-is. Context-length failures move to the next explicitly configured target.
-- 429 state is shared by **provider + quota group + model**. Independent group labels
-  do not manufacture independent quota. Group keys belonging to the same project/account.
-  Blank groups conservatively share a provider default; Groq defaults to separate keys,
-  with explicit grouping when you know their limits are shared.
-- Retry-After and supported reset headers win. Unknown 429s use `5s → 15s → 60s → 5m →
-  30m → 2h`, remaining COOLDOWN. Daily exhaustion requires explicit evidence and a reset;
-  Gemini's documented daily reset is Pacific midnight, including daylight saving time.
-- A role-only SSE response event commits the provider. Comments do not. Error-first or
-  malformed streams can fall back; after commitment there is **no provider switch**.
-  Missing `[DONE]` is an interruption. Cancellation closes the upstream.
-- **Reset shared state** clears credential invalidity and its shared quota group. It
-  does not restore provider quota, fix an invalid key, change expiry, or clear paid spend.
-  Use Edit / rotate to replace a secret or environment reference. Rotation keeps shared
-  cooldowns and spending; metadata-only edits preserve the current secret.
+- **Order is explicit.** Targets are tried in saved order; a target without a pinned key
+  uses the provider's keys by ascending priority. Skips cost nothing; up to five upstream
+  attempts per request by default.
+- **Failures are classified.** A rejected or revoked key is marked INVALID; billing or
+  account problems mark it unusable; 429 starts a cooldown shared by provider + quota
+  group + model (Retry-After and documented reset headers win); an unknown model, 5xx or
+  network failure blocks that provider/model briefly. Gemini's array-shaped error bodies
+  are understood too. A malformed request (400/422) is returned to you as-is.
+- **Streams commit once.** The first valid stream event commits the provider; errors
+  before it fall back, interruptions after it end with an SSE error event and never switch
+  provider. A stream ends normally at `data: [DONE]`, or at a clean close after a
+  `finish_reason`. A stream silent for 60 seconds is ended with an error.
+- **Deadlines.** New profiles allow 90 seconds for a non-stream request and 45 seconds for
+  the first stream event, across all attempts; both are editable per profile.
+- **Evidence.** Every response carries `X-QuotaMesh-Profile`, `-Provider`, `-Model`, `-Key`,
+  `-Attempts`, `-Fallback` and `-Request-Id`. When every candidate is blocked, QuotaMesh
+  answers 429 with Retry-After if one recovers within 60 seconds, otherwise 503, and lists
+  each candidate's skip reason.
 
-Profile names can change; slugs cannot. Deleting a profile archives its identity and
-reserves its slug, retaining spend and history. Default can be disabled, not deleted.
-Deleting a key removes its secret record and archives metadata; first remove any pinned
-targets. Provider changes also require removing pins. Provider pools join matching keys
-dynamically; adding a key does not create new quota.
+Requests and replies pass through unchanged apart from the `model` field. To account for
+streamed tokens, QuotaMesh asks OpenAI and Gemini for stream usage when your client did
+not; it then withholds OpenAI's extra usage-only chunk from that client and marks the
+response with `X-QuotaMesh-Usage-Injected: true`.
 
-If all candidates are already blocked, a recovery within 60 seconds yields local
-429 + Retry-After; otherwise local 503 includes sanitized candidate reasons. After real
-attempts, a terminal/budget-exhausted failure returns the last upstream/local error.
+## Paid guard, caps and cost
 
-### Paid caps and cost truth
+- PAID and UNKNOWN keys are skipped unless the profile allows paid use. When every target
+  of a profile is such a key, the request fails with `403 paid_blocked` and **no provider
+  call is made**.
+- Optional daily and monthly caps (UTC) apply per profile to paid traffic through QuotaMesh.
+  They check observed spend before each request, so concurrent requests can overshoot by
+  their own cost. They are not provider billing limits; set those at the provider as well.
+- No price list is bundled. Enter input and output USD prices per million tokens on a
+  capped paid target; QuotaMesh estimates cost from the provider's usage. A provider's own
+  `usage.cost_usd` wins. Missing usage keeps cost unknown, and a capped profile then blocks
+  paid routing until you reconcile it (Profiles) or explicitly allow unknown prices.
+- If paid accounting cannot be written, the finished response still reaches you, but paid
+  routing fails closed until you repair storage and acknowledge it in the dashboard.
 
-Paid and UNKNOWN plans need explicit permission in the selected profile. Caps and
-usage are scoped to that profile; provider/group/model cooldowns are shared across profiles. Optional daily/monthly caps use
-**UTC calendar windows and only paid traffic through QuotaMesh**. Daily rollups survive
-request-history deletion. Caps check observed spend before selection; concurrent and
-in-flight requests may overshoot by their final costs. They are not provider billing controls.
-
-No volatile model prices are bundled. Enter **both input and output USD prices per
-million tokens** for a local estimate. Explicit provider `usage.cost_usd` wins over that
-estimate; provider-specific documented cost fields can be recognized where implemented.
-A generic `usage.cost` or arbitrary “credits” field is not assumed to mean USD. Missing
-usage/cost stays unknown; capped paid routing then blocks unless you explicitly allow
-unknown cost. That override reduces the cap's protection. Use provider-side budgets too.
-
-If paid metadata/accounting cannot be written, the completed response still reaches the
-caller, diagnostic failures increase, and paid routing fails closed. A local marker keeps
-that block across restarts. Repair the storage problem and reconcile missing spend before
-removing `<QUOTAMESH_DATA_DIR>/paid-accounting-incomplete`; resetting a key does not clear it.
-
-## Connect a client
-
-The dashboard's **Connect** section uses the actual port and selected saved profile. Set
-its generated environment variables first, then copy the client snippet. On Windows,
-choose PowerShell. OpenCode configuration uses `@ai-sdk/openai-compatible` for Chat
-Completions and an environment key reference; merge it into your existing configuration.
-Native Responses/Messages clients remain outside this milestone.
+## Try it without keys
 
 ```sh
-export QUOTAMESH_KEY="$(.venv/bin/quotamesh key)"
-curl http://127.0.0.1:8787/v1/chat/completions \
-  -H "Authorization: Bearer $QUOTAMESH_KEY" \
-  -H 'Content-Type: application/json' \
-  -d '{"model":"qm/default","messages":[{"role":"user","content":"Hello"}]}'
+quotamesh demo
 ```
 
-For the OpenAI Python SDK, install `openai` separately and use
-`base_url="http://127.0.0.1:8787/v1"`, your local gateway key, and `model="qm/default"`.
-Use a saved alias such as `model="qm/free-app"` for another project; `GET /v1/models`
-lists enabled, non-archived profile aliases. Add `stream: true` for SSE. The gateway swaps only the selected model and preserves
-other JSON extension fields and original successful upstream bytes.
+The demo runs on port **8788** with temporary data, a fake provider and simulated dollars;
+it deletes its data on exit. Its dashboard has a scenario picker: rate limit with free
+backup, shared quota groups, paid guard, a $1 daily cap, stream errors before and after the
+first event, expired and rejected keys. It prints a `quotamesh key --data-dir ...` command
+for its own local key, so the [examples](examples/README.md) can run against it.
 
-## What you need for real provider testing
+## CLI reference
 
-**No secret is needed for the demo or automated tests.** For a real request, prepare:
+| Command | Purpose |
+| --- | --- |
+| `quotamesh start [--port 8787] [--no-browser] [--env-file .env]` | Run the dashboard and gateway; `--env-file` gives the server process that file's variables for environment references |
+| `quotamesh open [--port] [--print]` | Open (or print) a fresh one-time dashboard link for the running server |
+| `quotamesh key [--data-dir DIR]` | Print the local gateway key |
+| `quotamesh import-env --file .env [--plan NAME=PLAN ...] [--store value\|reference] [--yes]` | Preview and import keys from a `.env` file |
+| `quotamesh import-env [NAME ...]` | Import keys present in the server's own environment as references |
+| `quotamesh add --provider P --plan PLAN [--env-name VAR]` | Add one key (prompts privately when no variable is given) |
+| `quotamesh status` | Wallet and profile summary |
+| `quotamesh profile test SLUG` | Dry-run a profile's route; no provider call |
+| `quotamesh doctor ID [--generation --consent --profile SLUG --position N]` | List a key's models, or explicitly test one target |
+| `quotamesh env SLUG [--shell bash\|powershell]` | Print client environment setup |
+| `quotamesh reset ID` | Clear a key's invalid/cooldown state (never restores quota or spend) |
+| `quotamesh tail` | Follow metadata-only activity |
+| `quotamesh demo [--port 8788]` / `quotamesh fake-upstream` | Fake-provider sandbox / standalone fake provider |
 
-- An API key for an account you are authorized to use, plus a model available to that account.
-- Its correct plan classification and, for expiring access, the expiry date.
-- A shared provider project/account quota-group label when several keys share limits.
-- For capped paid access, current input/output USD-per-million-token prices. Start with
-  paid disabled; enable it deliberately only after reviewing your provider billing settings.
+Commands that talk to a running server accept `--port`. Set `QUOTAMESH_DATA_DIR` to use a
+separate data directory.
 
-Enter the key in the dashboard or set a variable such as `QM_OPENAI_KEY`,
-`QM_GEMINI_KEY`, `QM_GROQ_KEY`, or `QM_NIM_KEY` **before starting QuotaMesh**, then enter
-that variable's name in the credential form. Variables are references, not automatic
-provider imports; `.env` files are not loaded. Changing a process variable requires restart.
-The environment preview/import recognizes `OPENAI_API_KEY`, `GEMINI_API_KEY`,
-`GOOGLE_API_KEY`, `GROQ_API_KEY`, and `NVIDIA_API_KEY` in the **server process**.
-It never returns values, creates references as UNKNOWN by default, and changes no profile
-targets or permissions. Review the declared plan before deliberately allowing paid use.
-The local gateway key is generated automatically; there is no QuotaMesh cloud API key.
+## Local API
 
-Cloud users should enter secrets securely in environment settings, not chat. If proxy
-secrets are used, scope them to the corresponding API destination. Required real-provider
-hosts are `api.openai.com`, `generativelanguage.googleapis.com`, `api.groq.com`, and
-`integrate.api.nvidia.com`, or your custom endpoint. Prefer non-reserved variable names
-like the `QM_*` examples above. Add only the destinations you actually use.
+All endpoints are on `127.0.0.1`. Gateway endpoints need the local bearer key; management
+endpoints accept the dashboard session or the bearer key unless noted. Errors use the
+OpenAI shape `{"error": {"message", "type", "code"}}` and never contain provider secrets.
 
-Provider-free tests verify the decision engine. They do **not** establish live account
-permissions, available models, or every provider feature. The Access Catalog links to
-official provider documentation with dated, cautious notes; it is not quota or pricing
-truth. No live provider calls were made during Phase 4 verification.
+| Endpoint | Purpose |
+| --- | --- |
+| `POST /v1/chat/completions` | Routed Chat Completions, stream and non-stream |
+| `GET /v1/models`, `GET /v1/models/{id}` | Enabled profile aliases (`qm/<slug>`) |
+| `GET /health` | Process liveness only |
+| `POST /api/session/link` | One-time dashboard link (bearer key only; used by `quotamesh open`) |
+| `POST /api/local-key/reveal` | Show the local key in the dashboard (session only, not cached) |
+| `POST /api/environment/parse`, `POST /api/environment/import-file` | Preview and import `.env` content; values are never returned |
+| `GET /api/environment`, `POST /api/environment/import` | Import keys from the server's own environment |
+| `POST /api/credentials`, `PATCH`/`DELETE /api/credentials/{id}`, `POST /api/credentials/{id}/action` | Manage keys (write-only secrets) |
+| `POST /api/setup` | First-run `qm/default` from a saved key and model, paid off unless asked |
+| `GET`/`POST /api/profiles`, `PUT`/`DELETE /api/profiles/{slug}` | Manage profiles |
+| `POST /api/profiles/{slug}/reconcile` | Record a manual amount for unknown paid cost |
+| `POST /api/accounting/acknowledge` | Re-enable paid routing after storage is repaired |
+| `GET /api/explain`, `GET /api/dry-run`, `GET /api/status` | Candidate decisions with reasons and recovery links |
+| `GET /api/wallet`, `GET /api/usage` | Grouped capacity, today's usage and a 14-day daily series |
+| `GET /api/activity`, `GET /api/requests/{id}`, `GET /events` | Request traces and live metadata events |
+| `POST /api/doctor`, `GET /api/doctor` | Explicit model listing or one-target generation check |
+| `GET /api/integrations`, `GET /api/catalog` | Connection snippets; dated provider links |
 
-### Small CLI utilities
+## Data and privacy
 
-Commands below contact the running local server, using its local key and data directory.
-Use `--port` for a non-default port; environment import reads the server's environment.
+- **Metadata only.** History stores timestamps, profile, key label, provider, model,
+  outcome, HTTP status, latency, tokens and cost. Prompts, replies and authorization headers
+  are never stored or logged. Traces are kept for 30 days or 50,000 attempts; daily usage
+  totals are kept.
+- **Secrets.** Keys saved by value are plaintext in the local SQLite database. The data
+  directory is restricted to your user on macOS and Linux; on Windows it relies on your
+  profile's default permissions. Saving keys as environment references keeps values out of
+  the database.
+- **Durability.** SQLite runs in WAL mode with `synchronous=NORMAL`: an application crash
+  loses nothing, but a power loss or OS crash can drop the last moments of metadata
+  (history, usage) without corrupting the database.
+- **Location.** `%LOCALAPPDATA%\QuotaMesh` on Windows, `~/.local/share/quotamesh`
+  elsewhere, or `QUOTAMESH_DATA_DIR`. One running QuotaMesh owns a data directory at a
+  time. Back it up before upgrading; older builds cannot open a newer schema.
 
-```sh
-quotamesh doctor 1
-quotamesh doctor 1 --generation --consent --profile default --position 1
-quotamesh profile test default
-quotamesh env default --shell bash
-quotamesh import-env OPENAI_API_KEY
-quotamesh add --provider openai --plan UNKNOWN --env-name OPENAI_API_KEY
-quotamesh reset 1
-quotamesh tail
+## Compatibility
+
+- **API surface:** OpenAI Chat Completions (`/v1/chat/completions`, `/v1/models`), stream and
+  non-stream, including tools and `response_format`. There is no Responses or Messages API,
+  so Codex and Claude Code cannot use QuotaMesh natively. OpenCode can use it through its
+  OpenAI-compatible provider (`@ai-sdk/openai-compatible`), which the Connect page
+  configures; that transport is tested, the full OpenCode application is not.
+- **Verified live (2026-10-16):** OpenAI (`gpt-4.1-nano`) and Gemini through Google's
+  OpenAI-compatible endpoint (`gemini-3.5-flash-lite`); see
+  [live provider notes](docs/live-provider-notes.md). Groq, NVIDIA NIM and the
+  Anthropic, xAI, OpenRouter, Cerebras and Mistral presets use the same generic transport
+  and are covered by synthetic tests only.
+- **Gemini specifics:** new `AQ.` keys work. Tool calls arrive with `finish_reason: "stop"`,
+  streamed tool calls carry no `index`, and Gemini 3 returns
+  `extra_content.google.thought_signature`, which your app must send back unchanged with
+  the assistant tool-call message ([example](examples/support_desk.py)). Non-stream replies
+  can take 15-30 seconds.
+- **OpenAI specifics:** GPT-5 models reject `max_tokens`; send `max_completion_tokens`.
+
+## Troubleshooting
+
+| Symptom | What to do |
+| --- | --- |
+| The sign-in link says it was already used, or the dashboard is locked | Run `quotamesh open` (add `--port` for a non-default port). |
+| `401 unauthorized` from your app | Use the local key from `quotamesh key`, not a provider key; the demo has its own key. |
+| `403 paid_blocked` | Every eligible key is PAID or UNKNOWN. Allow paid use for that profile (ideally with a cap), add a free target, or correct the key's plan. |
+| `404 profile_not_found` | Use `qm/<slug>` of a saved, enabled profile; `GET /v1/models` lists them. |
+| `429` | With code `no_candidates`, QuotaMesh is waiting for a cooldown that ends within a minute (see Retry-After). Otherwise the provider's own 429 passed through after the other targets were tried. |
+| `503` | With code `no_candidates`, nothing is eligible: the body lists each target's skip reason and the Route page explains it. An upstream 503 (for example Gemini "high demand") means the provider is overloaded: retry, use streaming, or add a backup target. |
+| `504 deadline_exceeded` | No target answered in the profile's deadline. Gemini non-stream calls are slow; stream instead, or raise the deadline in Profiles. |
+| `400` from the provider | The request itself was rejected (for example `max_tokens` on GPT-5 models); it is returned unchanged and is not retried. |
+| A key shows INVALID | The provider rejected it. Rotate it on the API keys page, or run Diagnostics and then `quotamesh reset ID` if it was a transient mistake. |
+
+## Development and tests
+
+From a clone (Windows paths first, then bash):
+
+```powershell
+python -m venv .venv
+.venv\Scripts\python.exe -m pip install -e ".[dev]"
+# if the venv has no pip: uv pip install --python .venv\Scripts\python.exe -e ".[dev]"
+.venv\Scripts\ruff.exe check .
+.venv\Scripts\python.exe -m pytest -q
+.venv\Scripts\python.exe -m build
 ```
 
-`add` prompts privately for a key when no environment reference is supplied. `reset`
-does not restore quota or erase spend. `tail` contains metadata notifications only.
-
-## Local API and security
-
-| Endpoint | Purpose | Access |
-| --- | --- | --- |
-| `GET /health` | Process liveness, not provider readiness | None |
-| `GET /v1/models` | Enabled profile aliases | Local bearer key |
-| `POST /v1/chat/completions` | Stream/non-stream routing | Local bearer key |
-| `GET /api/status`, `/api/dry-run` | Safe metadata / shared selector; optional `?profile=slug` | Browser session or local bearer |
-| `GET /api/explain` | One snapshot: candidates, skips, cap evidence and recovery; optional `profile` | Browser session or local bearer |
-| `GET /api/integrations` | Snippets; optional `profile` and `shell=bash\|powershell` | Browser session or local bearer |
-| `GET /api/doctor`, `POST /api/doctor` | Sanitized observations / explicit listing or single-target generation | Browser session or local bearer |
-| `GET /api/environment`, `POST /api/environment/import` | Known server variable names / reference import | Browser session or local bearer |
-| `GET /api/catalog` | Dated docs/access links and configured preset state | Browser session or local bearer |
-| `GET /events` | Bounded metadata-only local activity SSE | Browser session or local bearer |
-| `POST /api/credentials` | Add a write-only credential, no model required | Browser session or local bearer |
-| `PATCH /api/credentials/{id}`, `DELETE /api/credentials/{id}` | Edit/rotate or archive a credential; omitted secret fields preserve it | Browser session or local bearer |
-| `GET /api/wallet` | Grouped sources and observed usage with truth badges | Browser session or local bearer |
-| `GET /api/profiles`, `POST /api/profiles` | List/create named profiles | Browser session or local bearer |
-| `PUT /api/profiles/{slug}`, `DELETE /api/profiles/{slug}` | Replace full profile policy or archive it | Browser session or local bearer |
-| `GET /api/usage` | Durable per-day/profile/key/model/plan rows; optional `profile`, `day` | Browser session or local bearer |
-| `GET /api/activity` | Request traces; optional `profile`, `limit` (1–100), `before` cursor | Browser session or local bearer |
-| `POST /api/policy` | Save ordered default policy | Browser session or local bearer |
-| `POST /api/credentials/{id}/action` | Enable, disable, or reset shared state | Browser session or local bearer |
-| `POST /api/test` | Explicit test using the gateway handler | Browser session or local bearer |
-| `POST /api/demo` | Reset a scenario; isolated demo only | Browser session or local bearer |
-| `POST /api/connection` | Legacy single-connection replacement; replaces default targets | Browser session or local bearer |
-
-The service binds to `127.0.0.1` with one worker. Host/origin checks, no CORS, random
-bearer/session tokens, HTTPS remote endpoints, and blocked redirects protect local
-credentials. Prompts and responses are **never persisted** or logged by QuotaMesh.
-History contains attempt IDs, target metadata, timing, outcome, token usage, and cost only.
-Client-provided labels are not persisted. There is no telemetry or background quota probing.
-
-Secrets entered directly are plaintext in local SQLite, with restrictive Unix permissions;
-Windows does not provide equivalent guarantees through POSIX mode bits. Data defaults to
-`~/.local/share/quotamesh` or `%LOCALAPPDATA%/QuotaMesh`. Set `QUOTAMESH_DATA_DIR` to isolate
-it. Schema v1/v2/v3/v4 upgrades to v5; additions are transactional. Back up before upgrading. Older builds
-cannot read v5. Paid cap totals survive upgrades, deletion and pruning. Retained attempts
-are backfilled once; earlier pruned detail cannot be reconstructed and coverage is labeled.
-Legacy paid costs without evidence stay unknown. Estimated remaining credit stays unknown
-for legacy stores with incomplete coverage, missing cost, or conflicting starting amounts.
-
-History retains at most 30 days and 50,000 attempts, keeping complete traces at the row
-boundary. Daily rollups are never pruned automatically. One request with fallback counts
-once as a routed request but can have several upstream attempts; rejected/no-capacity
-requests that make no upstream call are excluded from these observation counts.
-`quotamesh status` shows the grouped wallet and all named profile summaries.
-
-## Development
-
 ```sh
-.venv/bin/python -m pip install -e '.[dev]' build
+python3 -m venv .venv
+.venv/bin/python -m pip install -e '.[dev]'
 .venv/bin/ruff check .
 .venv/bin/pytest -q
 .venv/bin/python -m build
 ```
 
-An optional real-browser check uses Playwright Chromium:
+- **Unit and integration tests** use fake providers only; an autouse guard blocks any
+  non-loopback connection in ordinary tests.
+- **Browser smoke** (Playwright Chromium, optional): `pip install -e ".[browser]"`,
+  `playwright install chromium`, then `python scripts/browser_smoke.py --screenshots
+  output/frontend-browser`. It runs its own isolated demo.
+- **Benchmark:** `python scripts/bench_gateway.py --requests 500 --concurrency 20` measures
+  gateway overhead against an in-process fake provider (no network).
+- **Live suite (opt-in, real providers).** Put your keys in `.env` (never commit it), then
+  run `python -m pytest -m live tests/live -q --tb=short`. It is deselected by default. It
+  saves keys only as environment references in temporary data directories, caps every
+  request's tokens, spaces Gemini calls five seconds apart and stops at a per-run budget of
+  chat calls (`QM_LIVE_MAX_OPENAI`, default 40; `QM_LIVE_MAX_GEMINI`, default 30). A full
+  run makes about 8 OpenAI and 6 Gemini chat calls (two of the Gemini calls are rejected
+  on purpose): well under $0.01 with `gpt-4.1-nano`, and nothing on Gemini's free tier.
+  Override models with `QM_LIVE_OPENAI_MODEL` and `QM_LIVE_GEMINI_MODEL`, or the `.env`
+  location with `QM_ENV_FILE`. On an OpenAI billing error or a Gemini 429/503 the suite
+  checks how QuotaMesh classified it, then skips that provider's remaining tests. The
+  stories it proves are listed in [docs/user-stories.md](docs/user-stories.md).
 
-```sh
-.venv/bin/python -m pip install -e '.[browser]'
-.venv/bin/playwright install chromium
-.venv/bin/python scripts/check_javascript.py
-.venv/bin/python scripts/browser_smoke.py --screenshots output/frontend-browser
-```
-
-Set `CHROMIUM_PATH=/path/to/chromium` to use a system browser instead. The smoke script launches and stops its
-own isolated demo, checks all nine pages, first-run setup, profile and credential CRUD,
-twelve routing/streaming scenarios, Doctor, paid-generation blocking, draft navigation,
-partial failures/retries, session expiry, and responsive layouts. The report and
-screenshots are written to the chosen output directory. See the
-[acceptance guide](docs/frontend-experience.md) for all sixteen demo datasets.
-Playwright is a verification tool, not an application dependency.
-
-Record the synthetic product walkthrough with `python scripts/record_demo.py`.
-It writes `output/phase-five/quotamesh-final.webm` and uses temporary fake data only.
-Generated recordings, screenshots and verification environments are not committed.
-
-Use a task branch and Conventional Commits; see [CONTRIBUTING.md](CONTRIBUTING.md).
-See [architecture](docs/architecture.md), [phase-two plan](docs/phase-two-plan.md), [phase-three plan](docs/phase-three-plan.md), [Phase 4 implementation](docs/phase-four-plan.md), and
-[ROADMAP.md](ROADMAP.md). The [65-page product PDF](QuotaMesh_MVP_Architecture_Product_Spec_v0.3.pdf)
-is product intent; the roadmap separates delivered phases one–four from release and later extensions.
-
-## Final release and testing
-
-Read [the complete testing guide](docs/final-testing-guide.md) for first-run setup,
-manual scenarios, expected results, upgrades, troubleshooting, and the full PDF
-checklist mapping. [Release evidence](docs/release-evidence.md) records actual
-results and publishing status. Version 0.1.0 uses the MIT license.
-
-The first-run panel creates `qm/default` from a saved key and exact model with paid
-use disabled. Choose your plan explicitly. Duplicate access for the same provider
-and endpoint is rejected; existing aliases cannot retry the same effective key/model
-or bypass its observed cooldown. One gateway may own a data directory at a time.
-
-Timing and allowlisted OpenAI/Groq rate-header evidence are passive observations,
-not live quota. Groq request headers describe a day window, token headers a minute
-window. Snapshots become stale after at most 60 seconds or their earlier reset.
-Compatibility presets now include Anthropic, xAI, OpenRouter, Cerebras, and Mistral;
-these are generic transports, not native protocol or live-account guarantees.
-
-After public PyPI publication, `uvx quotamesh start` is the one-command entry point.
-Until then, use the verified release wheel:
-
-```sh
-uvx --from ./dist/quotamesh-0.1.0-py3-none-any.whl quotamesh start
-```
-
-Release verification launches real installed processes, fake providers, two keys on
-one provider, streaming and restart without consuming quota:
-
-```sh
-python scripts/release_smoke.py --wheel dist/quotamesh-0.1.0-py3-none-any.whl
-python -m pip install openai playwright
-npm install --prefix output/phase-four/node-client --no-audit --no-fund openai @ai-sdk/openai-compatible
-python scripts/integration_smoke.py
-```
-
-SDKs and Playwright are verification dependencies only. The SDK harness's ignored
-`output/phase-four/node-client` location is retained for existing CI compatibility;
-new screenshots and recordings use `output/phase-five`. Generate the final guide PDF
-with `pip install reportlab` and `python scripts/build_testing_guide.py`.
-
-Publishing uses GitHub OIDC in `.github/workflows/release.yml`, with an explicit
-release tag and optional publish input. The authorized PyPI account must configure
-its Trusted Publisher; no publishing secret is stored in this repository.
+Contributions use task branches and Conventional Commits; see [CONTRIBUTING.md](CONTRIBUTING.md)
+and [AGENTS.md](AGENTS.md). Design and scope: [architecture](docs/architecture.md),
+[roadmap](ROADMAP.md), [testing guide](docs/final-testing-guide.md),
+[release evidence](docs/release-evidence.md) and the
+[product spec](QuotaMesh_MVP_Architecture_Product_Spec_v0.3.pdf). Licensed under MIT.

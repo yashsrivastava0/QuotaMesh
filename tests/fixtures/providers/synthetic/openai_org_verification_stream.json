@@ -1,0 +1,24 @@
+{
+  "source": "synthetic",
+  "note": "Streaming some models needs a verified organization; the key still works for other models, so only this credential and model are degraded.",
+  "provider": "openai",
+  "case": "openai_org_verification_stream",
+  "status": 400,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "error": {
+      "message": "Your organization must be verified to stream this model. Please go to: https://platform.openai.com/settings/organization/general and click on Verify Organization. If you just verified, it can take up to 15 minutes for access to propagate.",
+      "type": "invalid_request_error",
+      "param": "stream",
+      "code": "unsupported_value"
+    }
+  },
+  "expect": {
+    "kind": "model_access",
+    "scope": "credential_model",
+    "state": "DEGRADED",
+    "until": null
+  }
+}

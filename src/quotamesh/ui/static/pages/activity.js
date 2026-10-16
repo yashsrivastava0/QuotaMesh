@@ -44,7 +44,15 @@ function renderHistory(data, append) {
     $('#request-history').append(details);
   }
   historyCursor = data.next_before; $('#more-history').hidden = !historyCursor;
+  // "View in Activity" from the Playground opens and highlights that request once.
+  const wanted = bootParams.get('request');
+  if (wanted && !requestHintApplied) {
+    const trace = [...document.querySelectorAll('#request-history .request-trace')].find(item => item.dataset.requestId === wanted);
+    if (trace) { trace.open = true; trace.classList.add('highlight'); trace.scrollIntoView({block: 'center'}); requestHintApplied = true; }
+  }
 }
+
+let requestHintApplied = false;
 
 $('#more-history').onclick = () => loadHistory(true).catch(error => notice(error.message,true));
 

@@ -1,0 +1,25 @@
+{
+  "source": "synthetic",
+  "note": "FAILED_PRECONDITION region block (https://ai.google.dev/gemini-api/docs/troubleshooting).",
+  "provider": "gemini",
+  "case": "gemini_user_location",
+  "status": 400,
+  "headers": {
+    "content-type": "application/json; charset=UTF-8"
+  },
+  "body": [
+    {
+      "error": {
+        "code": 400,
+        "message": "User location is not supported for the API use.",
+        "status": "FAILED_PRECONDITION"
+      }
+    }
+  ],
+  "expect": {
+    "kind": "region_blocked",
+    "scope": "credential",
+    "state": "UNUSABLE",
+    "until": null
+  }
+}

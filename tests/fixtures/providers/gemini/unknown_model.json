@@ -1,0 +1,29 @@
+{
+  "source": "live probe 2026-10-16",
+  "provider": "gemini",
+  "case": "unknown_model",
+  "request": {
+    "path": "/chat/completions",
+    "fields": [
+      "max_completion_tokens",
+      "messages",
+      "model"
+    ],
+    "model": "gemini-quotamesh-probe-no-such-model",
+    "stream": false
+  },
+  "status": 404,
+  "latency_ms": 498,
+  "headers": {
+    "content-type": "application/json; charset=UTF-8"
+  },
+  "body": [
+    {
+      "error": {
+        "code": 404,
+        "message": "models/gemini-quotamesh-probe-no-such-model is not found for API version v1main, or is not supported for generateContent. Call ModelService.ListModels to see the list of available models and their supported methods.",
+        "status": "NOT_FOUND"
+      }
+    }
+  ]
+}

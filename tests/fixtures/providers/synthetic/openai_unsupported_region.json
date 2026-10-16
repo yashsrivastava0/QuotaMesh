@@ -1,0 +1,24 @@
+{
+  "source": "synthetic",
+  "note": "Message follows https://platform.openai.com/docs/guides/error-codes (403 Country, region, or territory not supported).",
+  "provider": "openai",
+  "case": "openai_unsupported_region",
+  "status": 403,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "error": {
+      "code": "unsupported_country_region_territory",
+      "message": "Country, region, or territory not supported",
+      "param": null,
+      "type": "request_forbidden"
+    }
+  },
+  "expect": {
+    "kind": "region_blocked",
+    "scope": "credential",
+    "state": "UNUSABLE",
+    "until": null
+  }
+}
