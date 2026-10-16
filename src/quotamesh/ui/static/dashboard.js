@@ -12,7 +12,8 @@ const providers = JSON.parse($('#provider-options').textContent);
 
 let controller = null;
 
-let currentSlug = $('#profile-select').value;
+// Pages without the header picker (Playground has its own) read the server-rendered slug.
+let currentSlug = $('#profile-select')?.value || document.body.dataset.profile || 'default';
 let dirty = false;
 let readSignal;
 const page = document.body.dataset.page;
@@ -208,6 +209,165 @@ function recoveryLabel(action, decision = {}) {
   const until = decision.recovery_at && action?.code === 'wait' ? ' (after '+new Date(decision.recovery_at).toLocaleTimeString()+')' : '';
   return (action?.label || 'Review saved rules')+until+' →';
 }
+// ---- Chat requests shared by Route preview, Playground and Get started ----
+
+// Read a text/event-stream body and call onEvent({event, data}) once per event. Handles
+// LF, CRLF and CR line endings (also when a CRLF is split across chunks), comments and
+// multi-line data fields.
+async function readEventStream(response, onEvent) {
+  const reader = response.body.getReader(); const decoder = new TextDecoder();
+  let buffer = ''; let carry = '';
+  const dispatch = block => {
+    let event = 'message'; const data = [];
+    for (const line of block.split('\n')) {
+      if (!line || line.startsWith(':')) continue;
+      const colon = line.indexOf(':');
+      const name = colon < 0 ? line : line.slice(0, colon);
+      let value = colon < 0 ? '' : line.slice(colon + 1);
+      if (value.startsWith(' ')) value = value.slice(1);
+      if (name === 'event') event = value; else if (name === 'data') data.push(value);
+    }
+    if (data.length) onEvent({event, data: data.join('\n')});
+  };
+  const feed = text => {
+    text = carry+text; carry = '';
+    if (text.endsWith('\r')) { carry = '\r'; text = text.slice(0, -1); }
+    buffer += text.replace(/\r\n?/g, '\n');
+    let end;
+    while ((end = buffer.indexOf('\n\n')) >= 0) { dispatch(buffer.slice(0, end)); buffer = buffer.slice(end+2); }
+  };
+  while (true) {
+    const {value, done} = await reader.read();
+    if (done) break;
+    feed(decoder.decode(value, {stream: true}));
+  }
+  feed(decoder.decode());
+  // A stream may end without a final blank line; a held-back CR is a line ending.
+  for (const block of (buffer+(carry ? '\n' : '')).split('\n\n')) if (block.trim()) dispatch(block);
+}
+
+// Merge one streamed tool-call delta. OpenAI sends an index on every fragment; Gemini sends
+// a complete call without an index, so an id without an index starts a new call.
+function mergeToolCall(calls, call) {
+  if (!call || typeof call !== 'object') return;
+  const indexed = Number.isInteger(call.index);
+  let target = indexed ? calls.find(c => c.index === call.index) : call.id ? null : calls.at(-1);
+  if (!target) { target = {index: indexed ? call.index : null, id: null, name: '', arguments: ''}; calls.push(target); }
+  if (call.id) target.id = call.id;
+  const name = call.function?.name;
+  if (typeof name === 'string' && name) target.name = target.name && !name.startsWith(target.name) ? target.name+name : name;
+  if (typeof call.function?.arguments === 'string') target.arguments += call.function.arguments;
+}
+
+// Accumulate an OpenAI-style chat stream. Usage can arrive on a choices-less final chunk
+// (OpenAI) or on every content chunk (Gemini); the last one seen wins. A data error object or
+// an `event: error` after output started is reported as result.error, never thrown.
+async function consumeChatStream(response, onUpdate) {
+  const result = {content: '', usage: null, finishReason: null, model: null, toolCalls: [], error: null, done: false, firstTokenAt: null, unrecognized: 0};
+  await readEventStream(response, ({event, data}) => {
+    if (data === '[DONE]') { result.done = true; return; }
+    let payload;
+    try { payload = JSON.parse(data); } catch { result.unrecognized += 1; return; }
+    if (event === 'error' || payload?.error) {
+      result.error = payload?.error && typeof payload.error === 'object' ? payload.error : {message: String(payload?.error || 'Upstream stream error')};
+      onUpdate?.(result); return;
+    }
+    if (!payload || typeof payload !== 'object') { result.unrecognized += 1; return; }
+    if (payload.usage && typeof payload.usage === 'object') result.usage = payload.usage;
+    if (typeof payload.model === 'string') result.model = payload.model;
+    for (const choice of Array.isArray(payload.choices) ? payload.choices : []) {
+      const delta = choice?.delta || {};
+      if (typeof delta.content === 'string' && delta.content) { result.content += delta.content; result.firstTokenAt ??= performance.now(); }
+      if (Array.isArray(delta.tool_calls)) { for (const call of delta.tool_calls) mergeToolCall(result.toolCalls, call); result.firstTokenAt ??= performance.now(); }
+      if (choice?.finish_reason) result.finishReason = choice.finish_reason;
+    }
+    onUpdate?.(result);
+  });
+  return result;
+}
+
+// Normalise a non-stream chat completion into the same shape as consumeChatStream.
+function completionResult(payload) {
+  const choice = Array.isArray(payload?.choices) ? payload.choices[0] : null;
+  const message = choice?.message || {};
+  const toolCalls = [];
+  for (const call of Array.isArray(message.tool_calls) ? message.tool_calls : []) mergeToolCall(toolCalls, {...call, index: undefined});
+  return {content: typeof message.content === 'string' ? message.content : '', usage: payload?.usage && typeof payload.usage === 'object' ? payload.usage : null,
+    finishReason: choice?.finish_reason || null, model: typeof payload?.model === 'string' ? payload.model : null, toolCalls, error: null, done: true, firstTokenAt: null, unrecognized: choice ? 0 : 1};
+}
+
+// Token counts from a usage object; providers may report hidden thinking only in the total.
+function usageCounts(usage) {
+  if (!usage) return null;
+  const input = Number.isFinite(usage.prompt_tokens) ? usage.prompt_tokens : null;
+  let output = Number.isFinite(usage.completion_tokens) ? usage.completion_tokens : null;
+  if (Number.isFinite(usage.total_tokens) && input != null) output = Math.max(output ?? 0, usage.total_tokens-input);
+  return input == null && output == null ? null : {input, output};
+}
+
+// Error bodies are {"error": {...}} or, from Gemini, a root array [{"error": {...}}].
+function errorDetails(body) {
+  const item = Array.isArray(body) ? body[0] : body;
+  const error = item && typeof item === 'object' ? item.error : null;
+  if (!error || typeof error !== 'object') return {message: typeof error === 'string' ? error : '', code: null, type: null, param: null, status: null};
+  return {message: typeof error.message === 'string' ? error.message : '', code: error.code ?? null, type: error.type ?? null, param: error.param ?? null, status: error.status ?? null};
+}
+
+// Turn a failed chat response into a plain explanation with links to the page that fixes it.
+function explainFailure(status, body, headers) {
+  const error = errorDetails(body);
+  const code = typeof error.code === 'string' ? error.code : typeof error.type === 'string' ? error.type : '';
+  const text = [error.message, error.status, code, error.type].filter(Boolean).join(' ').toLowerCase();
+  const slug = headers?.get?.('X-QuotaMesh-Profile') || currentSlug;
+  // The provider's own words first, as a sentence, then our guidance.
+  const said = error.message.trim() ? error.message.trim()+(/[.!?]$/.test(error.message.trim()) ? ' ' : '. ') : '';
+  const retry = Number(headers?.get?.('Retry-After'));
+  const out = {title: '', detail: said.trim(), links: [], candidates: null, retryAfter: Number.isFinite(retry) && retry > 0 ? retry : null, tone: 'error'};
+  const link = (label, path) => out.links.push({label, href: linkTo(path)});
+  if (status === 401 && code === 'unauthorized') {
+    out.title = 'Your dashboard session expired.'; out.detail = 'Run quotamesh open in a terminal, or reopen the dashboard link printed when QuotaMesh started.';
+  } else if (code === 'paid_blocked') {
+    out.title = `qm/${slug} only has paid or Unknown-plan keys, and paid use is off.`; out.detail = 'Allow paid use (ideally with a daily cap) in the profile, or add a Free target.';
+    link('Review paid permission', '/profiles');
+  } else if (code === 'no_candidates') {
+    out.title = `No target in qm/${slug} can answer right now.`; out.detail = 'Each target was skipped for the reason below. Nothing was sent to a provider.';
+    out.candidates = Array.isArray(body?.quotamesh?.candidates) ? body.quotamesh.candidates : [];
+    out.tone = out.retryAfter ? 'warn' : 'error'; link('Open Route preview', '/route');
+  } else if (code === 'not_configured') {
+    out.title = 'qm/default is not set up yet.'; out.detail = 'Add an API key and create the default profile first.'; link('Get started', '/start');
+  } else if (code === 'profile_not_found') {
+    out.title = `qm/${slug} does not exist.`; out.detail = 'It may have been deleted. Choose a saved profile.'; link('Open Profiles', '/profiles');
+  } else if (code === 'deadline_exceeded') {
+    const info = body?.quotamesh || {};
+    out.title = 'No provider answered before the profile deadline.';
+    out.detail = `${info.attempts ? info.attempts+' attempt(s) were made. ' : ''}Streaming usually shows the first words sooner. You can also raise the deadline in the profile.`;
+    link('Raise the profile deadline', '/profiles');
+  } else if (code === 'invalid_model') {
+    out.title = 'Use a model name like qm/<profile>.';
+  } else if (code === 'request_too_large') {
+    out.title = 'This conversation is too large to send.'; out.detail = 'Clear the conversation and start again.';
+  } else if (code === 'invalid_api_key' || code === 'access_token_type_unsupported' || /please pass a valid api key|incorrect api key|invalid api key|api key not valid|api_key_invalid|access_token_type_unsupported/.test(text) || (status === 401 && headers?.get?.('X-QuotaMesh-Provider'))) {
+    out.title = 'The provider rejected the API key.'; out.detail = said+'Check that the whole key was saved and belongs to this provider.';
+    link('Replace the API key', '/access');
+  } else if (code === 'unsupported_parameter' || /unsupported parameter|unsupported_parameter/.test(text)) {
+    out.title = 'The model rejected a request setting.';
+    out.detail = said+(error.param === 'max_tokens' || /max_tokens/.test(text) ? 'Newer OpenAI models need max_completion_tokens instead of max_tokens. The Playground sends max_completion_tokens; update your app to do the same.' : '');
+  } else if (code === 'model_not_found' || (status === 404 && /not found|not_found|does not exist/.test(text))) {
+    out.title = 'The provider does not offer this model to this key.'; out.detail = said+'Check the exact model ID, or list the models this key can use.';
+    link('Edit the profile', '/profiles'); link('List models', '/help/doctor');
+  } else if (code === 'insufficient_quota' || /insufficient_quota|billing/.test(text)) {
+    out.title = 'The provider reports no remaining credit or quota for this key.'; out.detail = said.trim(); link('Review API keys', '/access');
+  } else if (status === 429 || /rate.?limit|resource_exhausted|quota/.test(text)) {
+    out.title = 'The provider rate-limited this request.'; out.detail = said+'Wait and retry, or add a backup target.'; out.tone = 'warn';
+    link('Add a backup target', '/profiles');
+  } else if (status === 503 && /high demand|overloaded|unavailable/.test(text)) {
+    out.title = 'The provider is overloaded right now.'; out.detail = said+'Try again shortly, or add a backup target.'; out.tone = 'warn';
+  } else {
+    out.title = `The request failed (HTTP ${status}).`;
+  }
+  return out;
+}
+
 function showFieldErrors(fields) {
   document.querySelectorAll('.field-error').forEach(e => e.remove());
   document.querySelectorAll('[aria-invalid]').forEach(e => {e.removeAttribute('aria-invalid');e.removeAttribute('aria-describedby');});

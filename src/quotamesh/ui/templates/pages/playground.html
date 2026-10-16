@@ -1,0 +1,24 @@
+    <section class="card block playground" id="playground">
+      <div class="playground-settings">
+        <label>Profile<select id="playground-profile">
+          {% for profile in profiles %}<option value="{{ profile.slug }}" {% if profile.slug == selected_profile %}selected{% endif %}>qm/{{ profile.slug }} · {{ profile.name }}</option>{% endfor %}
+          {% if not profiles %}<option value="default">qm/default · not set up yet</option>{% endif %}
+        </select></label>
+        <label class="check inline"><input id="playground-stream" type="checkbox" checked><span>Stream the reply</span></label>
+        <label>Max output tokens<input id="playground-max-tokens" type="number" min="1" max="100000" step="1" value="256" required></label>
+      </div>
+      <p id="playground-route" class="route-hint" role="status">Checking which target answers next…</p>
+      <details id="system-box"><summary>System prompt (optional)</summary><label>System prompt<textarea id="playground-system" rows="3" maxlength="20000" placeholder="For example: You are a concise assistant."></textarea></label><p class="fine">Sent first in every request of this conversation.</p></details>
+      <div id="transcript" class="transcript" role="region" aria-label="Conversation" tabindex="0"><p id="transcript-empty" class="transcript-empty">Send a message to see which provider answers, with tokens, timing and cost. Replies stay on this page only; QuotaMesh never saves prompts or replies.</p></div>
+      <form id="playground-form" class="composer">
+        <label for="playground-message">Message</label>
+        <textarea id="playground-message" rows="3" maxlength="100000" placeholder="Ask anything. Press Ctrl+Enter to send."></textarea>
+        <div class="actions">
+          <button type="submit" id="playground-send">{{ 'Send simulated message' if demo_mode else 'Send' }}</button>
+          <button type="button" id="playground-stop" class="secondary" hidden>Stop</button>
+          <button type="button" id="playground-clear" class="secondary">Clear conversation</button>
+          <span class="fine">With real keys this uses provider quota or money, as your profile allows.</span>
+        </div>
+        <p id="playground-status" class="fine" role="status" aria-live="polite"></p>
+      </form>
+    </section>

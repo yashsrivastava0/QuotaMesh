@@ -104,6 +104,7 @@ async function refresh(editPolicy = false) {
     tasks.push(panel('.table-wrap',async()=>{const data=await statusTask();return ()=>{if(data)renderAttempts(data.recent_attempts);};},version));
   }
   if (page === 'catalog') tasks.push(panel('#catalog-entries',async()=>{const data=await cachedCatalog();return ()=>renderCatalog(data);},version));
+  if (page === 'playground') tasks.push(panel('#playground-route',async()=>{const data=await api('/api/explain'+query);return ()=>renderRouteHint(data);},version));
   await Promise.all(tasks);
   if(version===refreshVersion) $('#page-load-status').textContent=page==='help' ? 'Built-in guidance. No provider calls.' : document.querySelector('[data-stale=true]') ? 'Some observations could not be updated. Retry the affected panel.' : `Local view updated ${new Date().toLocaleTimeString()}. Provider quota is not probed.`;
 }
@@ -121,7 +122,7 @@ document.addEventListener('click',event=>{
   const url=new URL(link.href);
   if(url.origin===location.origin && (url.pathname!==location.pathname || url.search!==location.search)){event.preventDefault();navigate(url.href);}
 });
-$('#profile-select').onchange=event=>{
+if($('#profile-select'))$('#profile-select').onchange=event=>{
   const slug=event.target.value;event.target.value=currentSlug;navigate(profileUrl(location.pathname,slug));
 };
 $('#leave-discard').onclick=()=>{dirty=false;location.href=pendingNavigation;};

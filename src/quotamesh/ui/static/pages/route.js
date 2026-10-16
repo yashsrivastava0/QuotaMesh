@@ -36,18 +36,10 @@ $('#test-form').onsubmit = async event => {
       try { const body = JSON.parse(text); $('#test-output').textContent = body?.choices?.[0]?.message?.content || JSON.stringify(body, null, 2); }
       catch { $('#test-output').textContent = text || 'Empty upstream response.'; }
     } else {
-      const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = '';
-      while (true) {
-        const {value, done} = await reader.read(); if (done) break;
-        buffer += decoder.decode(value, {stream: true}).replace(/\r\n/g, '\n');
-        let end;
-        while ((end = buffer.indexOf('\n\n')) >= 0) {
-          const eventText = buffer.slice(0,end); buffer = buffer.slice(end+2);
-          const data = eventText.split('\n').filter(line => line.startsWith('data:')).map(line => line.slice(5).trimStart()).join('\n');
-          if (!data || data === '[DONE]') continue;
-          try { const payload = JSON.parse(data); if (payload.error) { $('#test-output').textContent += '\nStream error: '+(payload.error.message || 'Upstream error'); $('#test-summary').textContent += ' · interrupted after commitment'; } else { $('#test-output').textContent += payload.choices?.[0]?.delta?.content || ''; } } catch { $('#test-output').textContent += '\n[Unrecognized upstream event]'; }
-        }
-      }
+      // Shared reader: CRLF framing, multi-line data, `event: error`, usage-only chunks.
+      const result = await consumeChatStream(response, partial => { $('#test-output').textContent = partial.content; });
+      if (result.error) { $('#test-output').textContent = result.content+'\nStream error: '+(result.error.message || 'Upstream error'); $('#test-summary').textContent += ' · interrupted after commitment'; }
+      if (result.unrecognized) $('#test-output').textContent += '\n[Unrecognized upstream event]';
     }
   } catch (error) { $('#test-summary').textContent = error.name === 'AbortError' ? 'Request stopped. Upstream cancellation recorded when detected.' : error.message; }
   finally { controller = null; $('#cancel-test').hidden = true; await refresh().catch(error => notice(error.message, true)); form.querySelector('[type="submit"]').disabled = false; }

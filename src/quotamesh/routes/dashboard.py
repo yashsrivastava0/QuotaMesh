@@ -40,6 +40,11 @@ PAGES = {
         "Profiles",
         "Choose exact models, target order, and spending rules for each app.",
     ),
+    "/playground": (
+        "playground",
+        "Playground",
+        "Chat with a saved profile and see which provider answered, with tokens, timing and cost.",
+    ),
     "/route": ("route", "Route & test", "Inspect your saved rules before sending a request."),
     "/connect": ("connect", "Connect", "Use one local endpoint with your app’s saved profile."),
     "/activity": (
@@ -201,6 +206,7 @@ def bootstrap(request: Request, token: str = "") -> Response:
 @router.get("/", response_class=HTMLResponse)
 @router.get("/access", response_class=HTMLResponse)
 @router.get("/profiles", response_class=HTMLResponse)
+@router.get("/playground", response_class=HTMLResponse)
 @router.get("/route", response_class=HTMLResponse)
 @router.get("/connect", response_class=HTMLResponse)
 @router.get("/activity", response_class=HTMLResponse)

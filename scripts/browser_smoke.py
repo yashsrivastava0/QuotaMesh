@@ -180,11 +180,100 @@ def fresh_defaults(context):
         page.close()
 
 
+def playground(page, origin, screenshots=None):
+    """Stream and non-stream Playground replies, metadata strip, and friendly errors."""
+    bodies = []
+
+    def capture(request):
+        if request.method == "POST" and request.url.endswith("/api/test"):
+            bodies.append(json.loads(request.post_data))
+
+    page.on("request", capture)
+    try:
+        load(page, origin, "fallback")
+        go(page, origin, "/playground")
+        expect(page.locator("#playground-route")).to_contain_text("Next answer from")
+        assert page.locator("#playground-stream").is_checked(), "Streaming is the default"
+        assert page.locator("#playground-max-tokens").input_value() == "256"
+        page.locator("#playground-message").fill("Hello there")
+        page.locator("#playground-message").press("Control+Enter")
+        first = page.locator(".message.assistant").nth(0)
+        expect(first.locator(".meta-strip")).to_be_visible()
+        expect(first.locator(".bubble")).to_have_text("Hello from fake upstream")
+        strip = first.locator(".meta-strip").inner_text()
+        for text in (
+            "Provider custom",
+            "Model fake-free",
+            "Key Backup",
+            "Attempts 2 · backup used",
+            "Tokens 1 in · 4 out",
+            "Finish stop",
+            "First words",
+        ):
+            assert text in strip, (text, strip)
+        href = first.locator(".meta-strip a").get_attribute("href")
+        assert href.startswith("/activity?request=") and "profile=default" in href, href
+        assert bodies[-1]["stream"] is True
+        assert bodies[-1]["stream_options"] == {"include_usage": True}
+        assert bodies[-1]["max_completion_tokens"] == 256
+        # A second, non-stream turn sends the whole conversation, held only in the page.
+        page.locator("#playground-stream").uncheck()
+        page.locator("#playground-message").fill("And again")
+        page.locator("#playground-send").click()
+        second = page.locator(".message.assistant").nth(1)
+        expect(second.locator(".meta-strip")).to_be_visible()
+        expect(second.locator(".bubble")).to_have_text("Hello from fake upstream")
+        strip = second.locator(".meta-strip").inner_text()
+        assert "Tokens 1 in · 4 out" in strip and "Attempts 1 · no fallback" in strip, strip
+        assert bodies[-1]["stream"] is False and "stream_options" not in bodies[-1]
+        assert [m["role"] for m in bodies[-1]["messages"]] == ["user", "assistant", "user"]
+        assert not page.evaluate("localStorage.length || sessionStorage.length")
+        if screenshots:
+            page.screenshot(path=str(screenshots / "playground-conversation.png"), full_page=True)
+        page.locator("#playground-clear").click()
+        assert not page.locator(".message").count()
+
+        # Paid-only profile with paid off: a plain explanation and a link to fix it.
+        created = page.request.post(
+            f"{origin}/api/profiles",
+            data={
+                "slug": "paid-only",
+                "name": "Paid only",
+                "targets": [{"provider_id": "custom", "model": "demo-billable", "credential_id": 3}],
+            },
+        )
+        assert created.status == 201, created.text()
+        go(page, origin, "/playground", "paid-only")
+        page.locator("#playground-message").fill("Hello")
+        page.locator("#playground-send").click()
+        card = page.locator(".message.assistant .error-card")
+        expect(card).to_contain_text("paid use is off")
+        assert "/profiles?profile=paid-only" in card.locator("a").first.get_attribute("href")
+        assert page.locator("#playground-message").input_value() == "Hello", "Text restored"
+
+        # Every target cooling down: candidates with reasons and a Retry-After countdown.
+        load(page, origin, "paid-guard")
+        go(page, origin, "/playground")
+        page.locator("#playground-message").fill("Hello")
+        page.locator("#playground-send").click()
+        expect(page.locator(".message.assistant .error-card")).to_contain_text("rate-limited")
+        page.locator("#playground-send").click()
+        blocked = page.locator(".message.assistant .error-card").nth(1)
+        expect(blocked).to_contain_text("can answer right now")
+        assert blocked.locator("li").count() == 3
+        expect(blocked.locator("[data-countdown]")).to_contain_text("retry")
+        if screenshots:
+            page.screenshot(path=str(screenshots / "playground-errors.png"), full_page=True)
+    finally:
+        page.remove_listener("request", capture)
+
+
 def journeys(page, app, origin, screenshots, metrics):
     for path, name in [
         ("/", "overview"),
         ("/access", "access"),
         ("/profiles", "profiles"),
+        ("/playground", "playground"),
         ("/route", "route"),
         ("/connect", "connect"),
         ("/activity", "activity"),
@@ -361,6 +450,8 @@ def journeys(page, app, origin, screenshots, metrics):
             assert "HTTP 200" in send(page)
             assert "HTTP 429" in send(page)
 
+    playground(page, origin, screenshots)
+
     load(page, origin, "large")
     go(page, origin, "/access")
     assert page.locator("#credential-list .credential").count() == 38
@@ -481,7 +572,11 @@ def main():
                 journeys(page, app, origin, screenshots, report["pages"])
                 report["checks"].extend(
                     [
-                        "nine pages and responsive layout",
+                        "ten pages and responsive layout",
+                        (
+                            "Playground stream and non-stream replies with metadata strip, "
+                            "multi-turn context, paid_blocked and no_candidates explanations"
+                        ),
                         "profile CRUD, defaults, dirty Save/Stay, context and back navigation",
                         "clipboard write completion and delayed permission-denied fallback",
                         "credential edits, deletion, privacy and environment preview",
