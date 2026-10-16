@@ -368,6 +368,30 @@ function explainFailure(status, body, headers) {
   return out;
 }
 
+// Error card for an explained failure: plain title and detail, blocked candidates with their
+// reasons and recovery links, then links to the pages that fix the problem.
+function failureCard(failure) {
+  const card = node('div', undefined, 'error-card'+(failure.tone === 'warn' ? ' warn' : ''));
+  card.setAttribute('role', 'alert');
+  card.append(node('strong', failure.title));
+  if (failure.detail) card.append(node('p', failure.detail));
+  if (failure.candidates?.length) {
+    const list = node('ul');
+    for (const candidate of failure.candidates) {
+      const entry = node('li', `${candidate.label || 'Target '+candidate.position} / ${candidate.model}: ${candidate.explanation || reasons[candidate.skip_reason] || candidate.skip_reason || 'not eligible'}`);
+      if (candidate.recovery_action) { entry.append(' '); const link = node('a', recoveryLabel(candidate.recovery_action, candidate)); link.href = recoveryHref(candidate.recovery_action, candidate); entry.append(link); }
+      list.append(entry);
+    }
+    card.append(list);
+  }
+  if (failure.links.length) {
+    const links = node('p', undefined, 'fix-links');
+    for (const link of failure.links) { const anchor = node('a', link.label+' →'); anchor.href = link.href; links.append(anchor, ' '); }
+    card.append(links);
+  }
+  return card;
+}
+
 function showFieldErrors(fields) {
   document.querySelectorAll('.field-error').forEach(e => e.remove());
   document.querySelectorAll('[aria-invalid]').forEach(e => {e.removeAttribute('aria-invalid');e.removeAttribute('aria-describedby');});

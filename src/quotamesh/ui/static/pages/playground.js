@@ -127,24 +127,11 @@ function startCountdown(element, seconds) {
 }
 
 function renderFailure(reply, failure) {
-  const card = node('div', undefined, 'error-card'+(failure.tone === 'warn' ? ' warn' : ''));
-  card.setAttribute('role', 'alert');
-  card.append(node('strong', failure.title));
-  if (failure.detail) card.append(node('p', failure.detail));
-  if (failure.candidates?.length) {
-    const list = node('ul');
-    for (const candidate of failure.candidates) {
-      const entry = node('li', `${candidate.label || 'Target '+candidate.position} / ${candidate.model}: ${candidate.explanation || reasons[candidate.skip_reason] || candidate.skip_reason || 'not eligible'}`);
-      if (candidate.recovery_action) { entry.append(' '); const link = node('a', recoveryLabel(candidate.recovery_action, candidate)); link.href = recoveryHref(candidate.recovery_action, candidate); entry.append(link); }
-      list.append(entry);
-    }
-    card.append(list);
-  }
-  if (failure.retryAfter) { const countdown = node('p'); countdown.dataset.countdown = ''; card.append(countdown); startCountdown(countdown, failure.retryAfter); }
-  if (failure.links.length) {
-    const links = node('p');
-    for (const link of failure.links) { const anchor = node('a', link.label+' →'); anchor.href = link.href; links.append(anchor, ' '); }
-    card.append(links);
+  const card = failureCard(failure);
+  if (failure.retryAfter) {
+    const countdown = node('p'); countdown.dataset.countdown = '';
+    const links = card.querySelector('.fix-links'); if (links) links.before(countdown); else card.append(countdown);
+    startCountdown(countdown, failure.retryAfter);
   }
   reply.bubble.replaceWith(card);
 }
