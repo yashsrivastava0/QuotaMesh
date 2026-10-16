@@ -1,0 +1,30 @@
+{
+  "source": "synthetic",
+  "note": "Regression: an RPM throttle whose message links /account/billing must cool down, not mark the key unusable. Reset comes from x-ratelimit-* headers.",
+  "provider": "openai",
+  "case": "openai_rate_limit_billing_link",
+  "status": 429,
+  "headers": {
+    "content-type": "application/json",
+    "x-ratelimit-limit-requests": "3",
+    "x-ratelimit-remaining-requests": "0",
+    "x-ratelimit-reset-requests": "20s",
+    "x-ratelimit-limit-tokens": "40000",
+    "x-ratelimit-remaining-tokens": "39950",
+    "x-ratelimit-reset-tokens": "75ms"
+  },
+  "body": {
+    "error": {
+      "message": "Rate limit reached for gpt-4.1-nano in organization org-<redacted> on requests per min (RPM): Limit 3, Used 3, Requested 1. Please try again in 20s. Visit https://platform.openai.com/account/rate-limits to learn more. You can increase your rate limit by adding a payment method to your account at https://platform.openai.com/account/billing.",
+      "type": "requests",
+      "param": null,
+      "code": "rate_limit_exceeded"
+    }
+  },
+  "expect": {
+    "kind": "rate_limit",
+    "scope": "quota",
+    "state": "COOLDOWN",
+    "until": "+20s"
+  }
+}

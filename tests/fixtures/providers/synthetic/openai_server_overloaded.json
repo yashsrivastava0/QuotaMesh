@@ -1,0 +1,24 @@
+{
+  "source": "synthetic",
+  "note": "Overload follows the 503 entry in https://platform.openai.com/docs/guides/error-codes.",
+  "provider": "openai",
+  "case": "openai_server_overloaded",
+  "status": 503,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "error": {
+      "message": "The server is overloaded or not ready yet.",
+      "type": "server_error",
+      "param": null,
+      "code": "server_is_overloaded"
+    }
+  },
+  "expect": {
+    "kind": "provider_failure",
+    "scope": "target",
+    "state": "DEGRADED",
+    "until": null
+  }
+}

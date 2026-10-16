@@ -1,0 +1,24 @@
+{
+  "source": "synthetic",
+  "note": "https://platform.openai.com/docs/guides/error-codes lists Slow Down as a 503: the quota rule must win over the provider-failure rule.",
+  "provider": "openai",
+  "case": "openai_slow_down_503",
+  "status": 503,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "error": {
+      "message": "Slow Down: please reduce your request rate.",
+      "type": "server_error",
+      "param": null,
+      "code": "slow_down"
+    }
+  },
+  "expect": {
+    "kind": "rate_limit",
+    "scope": "quota",
+    "state": "COOLDOWN",
+    "until": null
+  }
+}
