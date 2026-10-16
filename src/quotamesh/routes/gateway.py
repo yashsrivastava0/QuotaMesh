@@ -20,6 +20,7 @@ import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
+from quotamesh.config import registry
 from quotamesh.engine.classify import (
     Outcome,
     classify,
@@ -36,6 +37,16 @@ router = APIRouter()
 LOG = logging.getLogger("quotamesh")
 MAX_BODY_BYTES = 10 * 1024 * 1024
 MAX_FIRST_EVENT_BYTES = 64 * 1024
+# An injected stream is forwarded event by event; this bounds bytes held awaiting an event end.
+MAX_FRAMED_BYTES = 1024 * 1024
+STREAM_ENDED = (
+    b'event: error\ndata: {"error":{"message":"Upstream ended before DONE",'
+    b'"type":"upstream_stream"}}\n\n'
+)
+STREAM_INTERRUPTED = (
+    b'event: error\ndata: {"error":{"message":"Upstream stream interrupted",'
+    b'"type":"upstream_stream"}}\n\n'
+)
 
 
 def _sse_end(buffer: bytes) -> int:
@@ -89,6 +100,132 @@ def _record_attempt(request: Request, **values: Any) -> None:
             except OSError:
                 LOG.warning("Could not persist paid-accounting safety marker")
         LOG.warning("Could not write request metadata")
+
+
+class StreamState:
+    """Metadata observed on a committed stream; never holds content."""
+
+    __slots__ = ("done", "error", "finished", "usage")
+
+    def __init__(self) -> None:
+        self.done = self.error = self.finished = False
+        self.usage: dict[str, Any] = {}
+
+
+def inspect_event(event: bytes, state: StreamState, decision: dict[str, Any]) -> bool:
+    """Record metadata from one complete SSE event; return True for a usage-only chunk.
+
+    Inspection is bounded to small events, keeps token/cost metadata only and never changes
+    the bytes. A usage-only chunk is OpenAI's final `"choices": []` event carrying usage.
+    """
+    if len(event) > MAX_FIRST_EVENT_BYTES:
+        return False
+    data = b"\n".join(line[5:].lstrip() for line in event.splitlines() if line.startswith(b"data:"))
+    if data.strip() == b"[DONE]":
+        state.done = True
+        return False
+    try:
+        obj = json.loads(data)
+    except (ValueError, UnicodeDecodeError):
+        return False
+    if not isinstance(obj, dict):
+        return False
+    if "error" in obj:
+        state.error = True
+        return False
+    usage = obj.get("usage")
+    if usage and isinstance(usage, dict):
+        state.usage = usage_metadata(data, decision)
+    choices = obj.get("choices")
+    if not isinstance(choices, list):
+        return False
+    if any(isinstance(choice, dict) and choice.get("finish_reason") for choice in choices):
+        state.finished = True
+    return not choices and isinstance(usage, dict)
+
+
+async def relay_stream(
+    request: Request,
+    *,
+    first: bytes,
+    remainder: bytes,
+    chunks: AsyncIterator[bytes],
+    upstream: httpx.Response,
+    selected: dict[str, Any],
+    details: dict[str, Any],
+    started: float,
+    framed: bool,
+) -> AsyncIterator[bytes]:
+    """Forward a committed stream; a failure after commitment becomes an SSE error event.
+
+    Without injected usage, upstream chunks pass through byte for byte. When QuotaMesh injected
+    `stream_options.include_usage` (`framed`), complete events are forwarded unchanged except
+    the usage-only chunk the client did not ask for.
+    """
+    state = StreamState()
+    result, error_class = "OK", None
+    pending = [part for part in (first, remainder) if part]
+    # Framed: bytes awaiting an event end. Otherwise: a bounded copy used only for inspection.
+    buffer = b""
+    eof = False
+    try:
+        while not state.error:
+            if pending:
+                chunk = pending.pop(0)
+            else:
+                try:
+                    chunk = await anext(chunks)
+                except StopAsyncIteration:
+                    eof = True
+                    break
+            buffer += chunk
+            forward = []
+            while (end := _sse_end(buffer)) >= 0:
+                event, buffer = buffer[:end], buffer[end:]
+                usage_only = inspect_event(event, state, selected)
+                if framed and not usage_only:
+                    forward.append(event)
+            if not framed:
+                if len(buffer) > MAX_FIRST_EVENT_BYTES:
+                    buffer = b""
+                yield chunk
+                continue
+            if len(buffer) > MAX_FRAMED_BYTES:
+                # No event end within the bound: stop stripping and pass the rest through raw.
+                forward.append(buffer)
+                buffer, framed = b"", False
+            if forward:
+                yield b"".join(forward)
+        if eof and buffer:
+            inspect_event(buffer, state, selected)  # a final event may lack its blank line
+            if framed:
+                yield buffer
+        if state.error or not state.done:
+            result, error_class = "MID_STREAM_FAILURE", "stream"
+            if not state.error:
+                yield STREAM_ENDED
+    except (asyncio.CancelledError, GeneratorExit):
+        result, error_class = "CLIENT_CANCELLED", "cancelled"
+        raise
+    except (httpx.HTTPError, TimeoutError):
+        result, error_class = "MID_STREAM_FAILURE", "stream"
+        yield STREAM_INTERRUPTED
+    finally:
+        if selected["plan_type"] == "FREE" and state.usage.get("provider_cost_usd") is None:
+            state.usage["estimated_cost_usd"] = 0
+        try:
+            # Synchronous, before any await, so cancellation cannot skip the record.
+            _record_attempt(
+                request,
+                **details,
+                **state.usage,
+                outcome=result,
+                http_status=200,
+                error_class=error_class,
+                latency_ms=int((time.monotonic() - started) * 1000),
+            )
+        finally:
+            await upstream.aclose()
 
 
 def blocked_response(decisions, code="no_candidates", slug="default"):
@@ -176,6 +313,13 @@ async def execute_chat(request: Request, *, candidate=None, request_id=None) -> 
     deadline = time.monotonic() + (
         profile["first_event_timeout_s"] if streamed else profile["nonstream_deadline_s"]
     )
+    # Local accounting needs stream usage. Ask for it only when the client did not, and only
+    # from providers whose registry entry verified that stream_options.include_usage works.
+    client_options = payload.get("stream_options")
+    can_inject = streamed and (
+        client_options is None
+        or (isinstance(client_options, dict) and client_options.get("include_usage") is not True)
+    )
     attempted = set()
     attempted_secrets = set()
     context_skip = set()
@@ -246,6 +390,11 @@ async def execute_chat(request: Request, *, candidate=None, request_id=None) -> 
             "X-QuotaMesh-Request-Id": request_id,
         }
         forwarded = dict(payload, model=selected["model"])
+        provider = registry().get(selected["provider_id"])
+        inject = can_inject and provider is not None and provider.stream_usage == "inject"
+        if inject:
+            forwarded["stream_options"] = {**(client_options or {}), "include_usage": True}
+            qm_headers["X-QuotaMesh-Usage-Injected"] = "true"
         headers = {
             "Authorization": f"Bearer {secret}",
             "Content-Type": "application/json",
@@ -363,81 +512,20 @@ async def execute_chat(request: Request, *, candidate=None, request_id=None) -> 
         if streamed and outcome.kind == "ok" and status < 300:
             apply_outcome(request, selected, outcome)
 
-            async def body_stream(
-                first=first,
-                remainder=remainder,
-                chunks=chunks,
-                selected=selected,
-                upstream=upstream,
-                details=details,
-                started=started,
-            ):
-                result, error_class = "OK", None
-                usage = usage_metadata(first.split(b"data:", 1)[-1].strip(), selected)
-                buffer = b""
-                done = False
-                try:
-                    yield first
-
-                    async def rest():
-                        if remainder:
-                            yield remainder
-                        async for chunk in chunks:
-                            yield chunk
-
-                    async for chunk in rest():
-                        # Inspection is bounded and metadata-only; bytes pass through unchanged.
-                        buffer += chunk
-                        while (end := _sse_end(buffer)) >= 0:
-                            event_bytes, buffer = buffer[:end], buffer[end:]
-                            if len(event_bytes) > MAX_FIRST_EVENT_BYTES:
-                                continue
-                            data = b"\n".join(
-                                line[5:].lstrip()
-                                for line in event_bytes.splitlines()
-                                if line.startswith(b"data:")
-                            )
-                            if data == b"[DONE]":
-                                done = True
-                            elif data:
-                                try:
-                                    obj = json.loads(data)
-                                    if isinstance(obj, dict) and obj.get("usage"):
-                                        usage = usage_metadata(data, selected)
-                                    if isinstance(obj, dict) and "error" in obj:
-                                        result, error_class = "MID_STREAM_FAILURE", "stream"
-                                except (ValueError, UnicodeDecodeError):
-                                    pass
-                        if len(buffer) > MAX_FIRST_EVENT_BYTES:
-                            buffer = b""
-                        yield chunk
-                        if error_class:
-                            break
-                    if not done and result == "OK":
-                        result, error_class = "MID_STREAM_FAILURE", "stream"
-                        yield b'event: error\ndata: {"error":{"message":"Upstream ended before DONE","type":"upstream_stream"}}\n\n'
-                except (asyncio.CancelledError, GeneratorExit):
-                    result, error_class = "CLIENT_CANCELLED", "cancelled"
-                    raise
-                except (httpx.HTTPError, TimeoutError):
-                    result, error_class = "MID_STREAM_FAILURE", "stream"
-                    yield b'event: error\ndata: {"error":{"message":"Upstream stream interrupted","type":"upstream_stream"}}\n\n'
-                finally:
-                    await upstream.aclose()
-                    if selected["plan_type"] == "FREE" and usage.get("provider_cost_usd") is None:
-                        usage["estimated_cost_usd"] = 0
-                    _record_attempt(
-                        request,
-                        **details,
-                        **usage,
-                        outcome=result,
-                        http_status=200,
-                        error_class=error_class,
-                        latency_ms=int((time.monotonic() - started) * 1000),
-                    )
-
             return StreamingResponse(
-                body_stream(), media_type="text/event-stream", headers=qm_headers
+                relay_stream(
+                    request,
+                    first=first,
+                    remainder=remainder,
+                    chunks=chunks,
+                    upstream=upstream,
+                    selected=selected,
+                    details=details,
+                    started=started,
+                    framed=inject,
+                ),
+                media_type="text/event-stream",
+                headers=qm_headers,
             )
         if upstream:
             await upstream.aclose()
