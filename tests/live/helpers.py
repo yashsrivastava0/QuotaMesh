@@ -7,13 +7,16 @@ Failure messages carry only statuses, error codes and short descriptions.
 from __future__ import annotations
 
 import asyncio
+import gc
 import json
 import os
 import re
+import shutil
 import socket
 import tempfile
 import threading
 import time
+import warnings
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -365,11 +368,36 @@ def find_env_file(start: Path) -> Path | None:
     return None
 
 
+def close_store(app) -> None:
+    """Release the app's SQLite handles.
+
+    Stores that reuse connections close them in the app lifespan, which httpx.ASGITransport
+    never runs; on Windows open database files cannot be deleted.
+    """
+    close = getattr(app.state.store, "close", None)
+    if callable(close):
+        close()
+
+
+def remove_data_dir(path: Path) -> None:
+    """Delete a temporary data directory, retrying while Windows releases file handles."""
+    for _ in range(25):
+        gc.collect()  # unreachable connections release their files when collected
+        shutil.rmtree(path, ignore_errors=True)
+        if not path.exists():
+            return
+        time.sleep(0.2)
+    warnings.warn(f"could not delete live data directory {path}; delete it manually", stacklevel=2)
+
+
 @contextmanager
 def live_data_dir() -> Iterator[Path]:
-    """A temporary QuotaMesh data directory that is always deleted afterwards."""
-    with tempfile.TemporaryDirectory(prefix="quotamesh-live-", ignore_cleanup_errors=True) as name:
-        yield Path(name)
+    """A temporary QuotaMesh data directory that is deleted afterwards (or reported)."""
+    path = Path(tempfile.mkdtemp(prefix="quotamesh-live-"))
+    try:
+        yield path
+    finally:
+        remove_data_dir(path)
 
 
 @contextmanager

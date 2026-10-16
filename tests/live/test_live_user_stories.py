@@ -25,6 +25,7 @@ from .helpers import (
     Checks,
     CountingTransport,
     check_route_headers,
+    close_store,
     contains_any,
     expected_cost,
     files_contain,
@@ -352,6 +353,7 @@ def test_s4_openai_sdk_compatibility(
                 if failure[1] == "insufficient_quota":
                     provider_health.disable("openai", "OpenAI reported insufficient_quota")
                 pytest.fail(f"OpenAI SDK call failed: HTTP {failure[0]}, code {failure[1]}")
+        close_store(app)  # the lifespan normally does this; harmless when already closed
         checks(transport.posts == 5, f"exactly five OpenAI calls were made ({transport.posts})")
         checks(not files_contain(directory, live_environment.values()), "no key in data files")
     checks.verify()
