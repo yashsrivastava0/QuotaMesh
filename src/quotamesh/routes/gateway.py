@@ -200,7 +200,9 @@ async def relay_stream(
             inspect_event(buffer, state, selected)  # a final event may lack its blank line
             if framed:
                 yield buffer
-        if state.error or not state.done:
+        # Complete: [DONE], or a finish_reason followed by a clean upstream close (some
+        # providers omit the marker; docs/live-provider-notes.md D1).
+        if state.error or not (state.done or (state.finished and eof)):
             result, error_class = "MID_STREAM_FAILURE", "stream"
             if not state.error:
                 yield STREAM_ENDED
@@ -208,8 +210,9 @@ async def relay_stream(
         result, error_class = "CLIENT_CANCELLED", "cancelled"
         raise
     except (httpx.HTTPError, TimeoutError):
-        result, error_class = "MID_STREAM_FAILURE", "stream"
-        yield STREAM_INTERRUPTED
+        if not state.done:  # after [DONE] the response is already complete
+            result, error_class = "MID_STREAM_FAILURE", "stream"
+            yield STREAM_INTERRUPTED
     finally:
         if selected["plan_type"] == "FREE" and state.usage.get("provider_cost_usd") is None:
             state.usage["estimated_cost_usd"] = 0

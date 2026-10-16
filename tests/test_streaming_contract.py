@@ -171,3 +171,36 @@ async def test_unbounded_event_flushes_raw_and_stops_stripping(tmp_path, monkeyp
     # Nothing is lost or reordered; after the flush the usage chunk is simply forwarded.
     assert response.content == b"".join(events)
     assert tokens(app) == ("OK", 14, 1)
+
+
+@pytest.mark.parametrize(
+    ("tail", "outcome", "appended"),
+    [
+        # A finish_reason followed by a clean close is complete even without [DONE].
+        ("finish", "OK", b""),
+        ("finish+done", "OK", b""),
+        # No finish_reason and no [DONE]: the client is told the stream was cut short.
+        ("content", "MID_STREAM_FAILURE", b"event: error"),
+        # A finish_reason is not enough when the connection then fails.
+        ("finish+cut", "MID_STREAM_FAILURE", b"event: error"),
+        # After [DONE] the response is complete; a later transport error changes nothing.
+        ("finish+done+cut", "OK", b""),
+    ],
+)
+async def test_stream_end_needs_done_or_finish_reason_with_clean_close(
+    tmp_path, tail, outcome, appended
+):
+    role, content, finish, done = fixture_events("openai", "stream_plain")
+    upstream = {
+        "finish": [role, content, finish],
+        "finish+done": [role, content, finish, done],
+        "content": [role, content],
+        "finish+cut": [role, content, finish, httpx.ReadError("cut")],
+        "finish+done+cut": [role, content, finish, done, httpx.ReadError("cut")],
+    }[tail]
+    app, response, _ = await stream_once(tmp_path, upstream)
+    sent = b"".join(part for part in upstream if isinstance(part, bytes))
+    assert response.status_code == 200 and response.content.startswith(sent)
+    assert response.content[len(sent) :].startswith(appended)
+    assert bool(response.content[len(sent) :]) == bool(appended)
+    assert attempts(app)[-1]["outcome"] == outcome
