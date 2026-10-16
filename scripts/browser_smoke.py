@@ -357,6 +357,38 @@ def playground(page, origin, screenshots=None):
         page.remove_listener("request", capture)
 
 
+DEFERRED = []
+
+
+def copy_local_key(page, app, origin):
+    """Copy local key: clipboard on success, one-time read-only field when denied."""
+    if page.request.post(f"{origin}/api/local-key/reveal", data={}).status == 404:
+        DEFERRED.append("Connect copy local key: POST /api/local-key/reveal not in this build")
+        return
+    key = app.state.local_key
+    page.context.grant_permissions(["clipboard-read", "clipboard-write"], origin=origin)
+    try:
+        page.locator("#copy-local-key").click()
+        expect(page.locator("#local-key-status")).to_contain_text("Local key copied")
+        assert page.evaluate("navigator.clipboard.readText()") == key
+        assert key not in page.content(), "The key is never rendered when the clipboard works"
+        page.evaluate(
+            """() => { window.originalClipboardWrite = navigator.clipboard.writeText;
+            navigator.clipboard.writeText = () => Promise.reject(new DOMException('Denied', 'NotAllowedError')); }"""
+        )
+        page.locator("#copy-local-key").click()
+        expect(page.locator("#local-key-fallback")).to_be_visible()
+        assert page.locator("#local-key-value").input_value() == key
+        page.locator("#hide-local-key").click()
+        expect(page.locator("#local-key-fallback")).to_be_hidden()
+        assert page.locator("#local-key-value").input_value() == ""
+    finally:
+        page.evaluate(
+            "() => { if (window.originalClipboardWrite) navigator.clipboard.writeText = window.originalClipboardWrite; }"
+        )
+        page.context.clear_permissions()
+
+
 def journeys(page, app, origin, screenshots, metrics):
     for path, name in [
         ("/", "overview"),
@@ -459,6 +491,7 @@ def journeys(page, app, origin, screenshots, metrics):
             "() => { navigator.clipboard.writeText = window.originalClipboardWrite; delete window.originalClipboardWrite; }"
         )
         page.context.clear_permissions()
+    copy_local_key(page, app, origin)
     page.locator("#profile-select").select_option("free-app")
     page.wait_for_url("**/connect?profile=free-app")
     ready(page)
@@ -685,6 +718,7 @@ def main():
                 page.close()
             assert not errors, errors
             report["javascript_errors"] = errors
+            report["deferred"] = DEFERRED
             report["result"] = "passed"
             context.tracing.stop()
         except Exception:
