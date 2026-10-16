@@ -558,6 +558,17 @@ class Store:
                 )
             ]
 
+    def request_trace(self, request_id: str) -> list[dict[str, Any]]:
+        """Ordered metadata rows of one request (attempts hold no prompt or reply text)."""
+        with self.connection() as conn:
+            return [
+                dict(row)
+                for row in conn.execute(
+                    "SELECT * FROM attempts WHERE request_id=? ORDER BY attempt_idx,id",
+                    (request_id,),
+                )
+            ]
+
     def routing_snapshot(self, now, slug="default"):
         with self.connection() as conn:
             row = conn.execute(

@@ -1,11 +1,14 @@
 """Authorized profile, wallet, usage, and metadata history management."""
 
+import json
+import re
 from datetime import UTC, date, datetime
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
+from quotamesh.connect import REASONS
 from quotamesh.credentials import CredentialPatch
 from quotamesh.policy import ProjectProfile
 from quotamesh.security import api_error, configuration_error, management_authorized
@@ -13,6 +16,26 @@ from quotamesh.usage import summarize
 from quotamesh.wallet import snapshot
 
 router = APIRouter()
+REQUEST_ID = re.compile(r"[0-9a-f]{32}")
+TRACE_FIELDS = (
+    "attempt_idx",
+    "ts",
+    "provider_id",
+    "model",
+    "credential_id",
+    "credential_label",
+    "plan_type",
+    "outcome",
+    "http_status",
+    "error_class",
+    "latency_ms",
+    "ttfb_ms",
+    "input_tokens",
+    "output_tokens",
+    "provider_cost_usd",
+    "estimated_cost_usd",
+    "streamed",
+)
 
 
 def denied(request):
@@ -158,6 +181,76 @@ def usage(request: Request, profile: str | None = None, day: str | None = None):
     return JSONResponse(
         {"rows": rows, "totals": summarize(rows), "profile": profile, "day": day, "calendar": "UTC"}
     )
+
+
+def skipped_candidates(raw):
+    """Labels and fixed explanations of candidates skipped before an attempt."""
+    try:
+        decisions = json.loads(raw or "[]")
+    except ValueError:
+        return []
+    return [
+        {
+            "label": d.get("label"),
+            "skip_reason": d.get("skip_reason"),
+            "explanation": REASONS.get(d.get("skip_reason"), "Skipped under the saved policy."),
+        }
+        for d in decisions
+        if isinstance(decisions, list) and isinstance(d, dict)
+    ]
+
+
+def trace_view(rows):
+    attempts = [
+        {name: row.get(name) for name in TRACE_FIELDS}
+        | {"skipped": skipped_candidates(row.get("skipped_json"))}
+        for row in rows
+    ]
+    costs = [
+        row["provider_cost_usd"]
+        if row["provider_cost_usd"] is not None
+        else row["estimated_cost_usd"]
+        for row in rows
+    ]
+    if any(cost is None for cost in costs):
+        source = "UNKNOWN"
+    elif any(row["provider_cost_usd"] is None for row in rows):
+        source = "LOCAL"
+    else:
+        source = "PROVIDER"
+
+    def total(name):
+        values = [row[name] for row in rows if row[name] is not None]
+        return sum(values) if values else None
+
+    return {
+        "request_id": rows[0]["request_id"],
+        "profile_slug": rows[0]["profile_slug"],
+        "started_at": min(row["ts"] for row in rows),
+        "attempts": attempts,
+        "totals": {
+            "attempts": len(rows),
+            "input_tokens": total("input_tokens"),
+            "output_tokens": total("output_tokens"),
+            "known_cost_usd": sum(cost for cost in costs if cost is not None),
+            "cost_source": source,
+        },
+    }
+
+
+@router.get("/api/requests/{request_id}")
+def request_trace(request_id: str, request: Request):
+    """One request's ordered attempts: metadata only, never prompt or reply text."""
+    if error := denied(request):
+        return error
+    rows = (
+        request.app.state.store.request_trace(request_id)
+        if REQUEST_ID.fullmatch(request_id)
+        else []
+    )
+    if not rows:
+        return api_error(404, "Request not found or no longer retained", "request_not_found")
+    return JSONResponse(trace_view(rows))
 
 
 @router.get("/api/activity")

@@ -1,10 +1,56 @@
 """Wallet views built only from manual metadata and local gateway observations."""
 
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from quotamesh.engine.select import quota_key
 from quotamesh.usage import summarize
+
+DAILY_DAYS = 14
+
+
+def daily_series(rows, today, days=DAILY_DAYS):
+    """UTC days oldest first, zero-filled, from durable rollups (they outlive history)."""
+    series = {}
+    for offset in range(days - 1, -1, -1):
+        day = (today - timedelta(days=offset)).isoformat()
+        series[day] = {
+            "day": day,
+            "routed_requests": 0,
+            "attempts": 0,
+            "failures": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "known_cost_usd": 0,
+            "unknown_cost": 0,
+            "by_provider": {},
+        }
+    for row in rows:
+        entry = series.get(row["day"])
+        if entry is None:
+            continue
+        for name in (
+            "routed_requests",
+            "attempts",
+            "failures",
+            "input_tokens",
+            "output_tokens",
+            "unknown_cost",
+        ):
+            entry[name] += row[name]
+        cost = row["provider_cost_usd"] + row["estimated_cost_usd"]
+        entry["known_cost_usd"] += cost
+        provider = entry["by_provider"].setdefault(
+            row["provider_id"], {"routed_requests": 0, "known_cost_usd": 0}
+        )
+        provider["routed_requests"] += row["routed_requests"]
+        provider["known_cost_usd"] += cost
+    for entry in series.values():
+        # Sums of tiny per-call estimates otherwise carry binary float noise.
+        entry["known_cost_usd"] = round(entry["known_cost_usd"], 10)
+        for provider in entry["by_provider"].values():
+            provider["known_cost_usd"] = round(provider["known_cost_usd"], 10)
+    return list(series.values())
 
 
 def snapshot(store, now):
@@ -123,6 +169,7 @@ def snapshot(store, now):
         "buckets": buckets,
         "totals": summarize(rows),
         "today": summarize([r for r in rows if r["day"] == now.date().isoformat()]),
+        "daily": daily_series(rows, now.date()),
         "coverage": coverage,
         "profiles": profiles,
         "limitations": "Local observations only. Outside-gateway usage is invisible. Shared credit is counted once; remaining dollars are estimates, and provider quota is unknown.",
