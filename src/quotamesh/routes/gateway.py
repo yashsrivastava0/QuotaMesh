@@ -20,7 +20,13 @@ import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from quotamesh.engine.classify import Outcome, classify, sse_payload, usage_metadata
+from quotamesh.engine.classify import (
+    Outcome,
+    classify,
+    error_status,
+    sse_payload,
+    usage_metadata,
+)
 from quotamesh.observations import rate_observations
 from quotamesh.routing import decision_snapshot
 from quotamesh.security import api_error, bearer_authorized
@@ -322,17 +328,10 @@ async def execute_chat(request: Request, *, candidate=None, request_id=None) -> 
                             pending = remainder
                             continue
                         if "error" in event or first_event_is_error(first):
-                            error = event.get("error") or {}
-                            error_status = (
-                                error.get("status", error.get("code", 502))
-                                if isinstance(error, dict)
-                                else 502
-                            )
-                            if not isinstance(error_status, int) or not 400 <= error_status <= 599:
-                                error_status = 502
+                            # Google-style events name a status string; derive an HTTP status.
                             outcome = classify(
                                 selected["provider_id"],
-                                error_status,
+                                error_status(event.get("error")),
                                 upstream.headers,
                                 json.dumps(event).encode(),
                                 datetime.now(UTC),
