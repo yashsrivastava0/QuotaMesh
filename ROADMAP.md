@@ -68,4 +68,31 @@ guards, keyboard access, and responsive checks; the fake-provider demo has a rec
 walkthrough. See [Phase 4 implementation and evidence](docs/phase-four-plan.md).
 
 **Phase five is the final MVP delivery.** See [the testing guide](docs/final-testing-guide.md) and [release evidence](docs/release-evidence.md). Deferred protocols, secret-storage extensions, and broader inference endpoints are outside this completed product scope; no Phase 6 is planned.
-No real quota was used. Live provider/account readiness requires authorized keys and models.
+
+## Live-provider readiness (post-MVP hardening)
+
+Verified on 2026-10-16 against real OpenAI (`gpt-4.1-nano`) and Gemini
+(`gemini-3.5-flash-lite`, new `AQ.` key format) with a budgeted probe and an opt-in live suite.
+Evidence and decisions: [live provider notes](docs/live-provider-notes.md); procedure:
+[live testing](docs/live-testing.md); stories: [user stories](docs/user-stories.md).
+
+Fixed because real providers behave differently from the original fixtures: Gemini's root-array
+error bodies (a bad key now fails over and is marked invalid), billing wording in rate-limit
+messages (no longer makes a key permanently unusable), Gemini `retryDelay`/per-day quota ids,
+OpenAI spend-limit and region codes, streamed usage accounting, streams that end without
+`[DONE]`, SDK disconnects after `[DONE]`, deadline expiry being treated as a network fault, and a
+Doctor check that GPT-5 models rejected.
+
+Spec deviations, deliberately:
+- Stream usage is injected for registry-verified providers (OpenAI, Gemini), with the extra
+  usage-only chunk withheld from clients that did not ask (§10.2 allows registry-flagged hooks).
+- New profiles default to a 90 s non-stream deadline and 45 s first-event timeout (spec: 45/30)
+  because live Gemini replies took 15–28 s.
+- `.env` import (v0.2 in the spec) ships now, with preview, per-key plan choice and no value
+  ever displayed: `quotamesh import-env --file .env`, the Get started page and
+  `quotamesh start --env-file`.
+- The dashboard adds a Playground and a guided Get started page; spend reconcile and accounting
+  acknowledge close the unknown-cost and storage-failure loops.
+
+Still deferred: direct `provider/model` targets and discovered models in `/v1/models`, Responses
+and Messages protocols, OS keyring storage, and dark mode.
