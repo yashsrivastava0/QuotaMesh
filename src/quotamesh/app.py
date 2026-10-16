@@ -37,7 +37,8 @@ def create_app(
     client = httpx.AsyncClient(
         transport=upstream_transport,
         follow_redirects=False,
-        timeout=httpx.Timeout(connect=5, read=60, write=10, pool=5),
+        # Reads are bounded by profile deadlines and the gateway's post-commit idle timeout.
+        timeout=httpx.Timeout(connect=5, read=None, write=10, pool=5),
     )
 
     @asynccontextmanager
