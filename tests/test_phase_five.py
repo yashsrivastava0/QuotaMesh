@@ -178,5 +178,5 @@ async def test_lifespan_closes_client_when_lock_is_unavailable(tmp_path):
 def test_version_does_not_open_storage(tmp_path, monkeypatch):
     monkeypatch.setenv("QUOTAMESH_DATA_DIR", str(tmp_path / "absent"))
     result = CliRunner().invoke(cli, ["--version"])
-    assert result.exit_code == 0 and result.stdout.strip() == "0.1.0"
+    assert result.exit_code == 0 and result.stdout.strip() == "0.2.0"
     assert not (tmp_path / "absent").exists()
