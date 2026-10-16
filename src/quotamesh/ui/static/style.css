@@ -257,6 +257,46 @@ dialog::backdrop { background: #18312166; }
 .key-check { padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: #f8faf7; overflow-wrap: anywhere; }
 .key-check p { margin: 6px 0; }
 .first-reply { margin-top: 12px; }
+/* Overview: today tiles and the 14-day chart. Series colours are the validated categorical
+   slots 1-3 (all pairs pass CVD and normal-vision checks); light aqua is below 3:1 on white,
+   so a legend and the table view carry every value too. */
+.tiles-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.tiles-heading h2 { margin: 0; }
+.tiles-heading p { margin: 0; }
+.tiles { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 14px; margin-top: 14px; }
+.tile { background: #fff; padding: 18px; border: 1px solid var(--line); border-radius: 8px; min-width: 0; }
+.tile span, .tile small { display: block; font-size: 13px; color: var(--muted); }
+.tile strong { display: block; font-size: 28px; font-weight: 600; color: #202c28; margin: 8px 0; letter-spacing: -.03em; overflow-wrap: anywhere; }
+.chart-card h2 { margin-bottom: 4px; }
+.legend { display: flex; flex-wrap: wrap; gap: 8px 18px; list-style: none; padding: 0; margin: 14px 0 6px; font-size: 13px; color: #202c28; }
+.legend li { display: inline-flex; align-items: center; gap: 6px; }
+.swatch { display: inline-block; width: 12px; height: 12px; border-radius: 3px; }
+.chart-frame { width: 100%; }
+.chart-frame svg { display: block; max-width: 100%; height: auto; overflow: visible; }
+.chart-frame text { fill: var(--muted); font-size: 13px; font-family: inherit; }
+.chart-frame .tick { font-variant-numeric: tabular-nums; }
+.chart-frame .value-label { fill: #202c28; font-weight: 600; }
+.chart-frame .gridline { stroke: #e3e9e3; stroke-width: 1; }
+.chart-frame .baseline { stroke: #a9b7ae; stroke-width: 1; }
+.chart-frame .hit { fill: transparent; }
+.chart-frame .hit:focus { outline: none; }
+.chart-frame .hit:focus-visible { stroke: #277c60; stroke-width: 2; }
+.chart-frame .day.active .segment { opacity: .8; }
+.series-1 { fill: #2a78d6; background: #2a78d6; }
+.series-2 { fill: #eb6834; background: #eb6834; }
+.series-3 { fill: #1baf7a; background: #1baf7a; }
+.series-other { fill: #7b8680; background: #7b8680; }
+.chart-tip rect { fill: #fff; stroke: #8a9a8f; stroke-width: 1; }
+.chart-tip text { fill: var(--muted); }
+.chart-tip .tip-value { fill: #202c28; font-weight: 650; }
+.chart-tip .tip-key { stroke-width: 3; stroke-linecap: round; }
+.chart-tip .tip-key.series-1 { stroke: #2a78d6; }
+.chart-tip .tip-key.series-2 { stroke: #eb6834; }
+.chart-tip .tip-key.series-3 { stroke: #1baf7a; }
+.chart-tip .tip-key.series-other { stroke: #7b8680; }
+@media (max-width: 1100px) { .tiles { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 600px) { .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; } .tile strong { font-size: 24px; } }
+@media (forced-colors: active) { .swatch, .series-1, .series-2, .series-3, .series-other { forced-color-adjust: none; } }
 .key-reveal { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .key-reveal input { flex: 1 1 320px; margin-top: 0; font-family: ui-monospace, Consolas, monospace; }
 #first-reply .error-card { margin-top: 12px; }

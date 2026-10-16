@@ -1,7 +1,20 @@
-<section class="metrics" aria-label="Local route summary">
-  <div><span>API credentials</span><strong id="metric-keys">{{ routing.credentials|length }}</strong><small>Access you configured</small></div>
-  <div><span>Eligible targets in this profile</span><strong id="metric-eligible">{{ decisions|selectattr('eligible')|list|length }}</strong><small>Saved rules, without a provider probe</small></div>
-  <div><span>Known observed cost today</span><strong id="metric-spend">Loading…</strong><small>UTC · through this gateway only</small></div>
+<section class="block" aria-labelledby="today-title">
+  <div class="tiles-heading"><h2 id="today-title">Today</h2><p class="fine">UTC day · requests through this gateway only · <span id="metric-keys">{{ routing.credentials|length }}</span> API key(s) · <span id="metric-eligible">{{ decisions|selectattr('eligible')|list|length }}</span> eligible target(s) in qm/{{ selected_profile }}</p></div>
+  <div class="tiles">
+    <div class="tile"><span>Requests</span><strong id="tile-requests">…</strong><small>Routed today</small></div>
+    <div class="tile"><span>Input tokens</span><strong id="tile-input">…</strong><small>Provider reported</small></div>
+    <div class="tile"><span>Output tokens</span><strong id="tile-output">…</strong><small>Provider reported</small></div>
+    <div class="tile"><span>Known cost</span><strong id="metric-spend">…</strong><small>Gateway observed or estimated</small></div>
+    <div class="tile"><span>Unknown cost</span><strong id="tile-unknown">…</strong><small>Attempts without a known price</small></div>
+  </div>
+</section>
+<section id="usage-chart" class="card block chart-card" aria-labelledby="chart-title" hidden>
+  <h2 id="chart-title">Routed requests per day, last 14 days</h2>
+  <p id="chart-subtitle" class="fine">UTC days, stacked by provider. Hover or focus a day for tokens and known cost; the table below has every value.</p>
+  <ul id="chart-legend" class="legend" aria-label="Providers"></ul>
+  <div id="chart-frame" class="chart-frame"></div>
+  <p id="chart-empty" class="fine" hidden>No routed requests in the last 14 days. Send a message in the Playground to see one here.</p>
+  <details><summary>Show as table</summary><div class="table-wrap"><table><thead><tr id="chart-table-head"></tr></thead><tbody id="chart-table-body"></tbody></table></div></details>
 </section>
 <section id="wallet" class="block">
   <div class="section-head"><h2>Your AI capacity</h2><span class="state">Gateway observations</span></div>

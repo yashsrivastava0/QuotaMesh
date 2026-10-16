@@ -54,8 +54,7 @@ async function refresh(editPolicy = false) {
   if (page === 'overview') {
     tasks.push(panel('#wallet',async()=>{const data=await api('/api/wallet');return ()=>{
       renderWallet(data); $('#metric-keys').textContent=Object.values(data.buckets).flat().reduce((n,s)=>n+s.keys.length,0);
-      $('#metric-spend').textContent=dollars(data.today.known_cost_usd);
-      document.querySelector('#metric-spend').previousElementSibling.textContent='Known observed cost today';
+      renderToday(data.today); renderUsageChart(data.daily);
     };},version));
     tasks.push(panel('.next-steps',async()=>{const data=await api('/api/explain'+query);return ()=>{
       $('#metric-eligible').textContent=data.decisions.filter(d=>d.eligible).length;
