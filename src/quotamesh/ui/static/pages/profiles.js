@@ -85,7 +85,7 @@ $('#policy-form').onsubmit = async event => {
   try {
     await api(creatingProfile ? '/api/profiles' : '/api/profiles/'+currentSlug, values, creatingProfile ? 'POST' : 'PUT');
     if(pendingNavigation){const destination=new URL(pendingNavigation);if(destination.searchParams.get('profile')===currentSlug){destination.searchParams.set('profile',slug);pendingNavigation=destination.href;}}
-    currentSlug = slug; creatingProfile = false; dirty = false; updateProfileUrl(); await refresh(true); notice('Profile saved. Inspect Route & test to see the active policy.');
+    currentSlug = slug; creatingProfile = false; dirty = false; updateProfileUrl(); await refresh(true); notice('Profile saved. Open Route preview to see which target answers next.');
     document.dispatchEvent(new Event('editor-saved'));
   } catch (error) { pendingNavigation=null;notice(error.message, true); }
   finally { delete form.dataset.busy; form.querySelector('[type="submit"]').disabled = false; }

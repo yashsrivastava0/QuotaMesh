@@ -21,7 +21,7 @@
   <aside class="navigation">
     <nav aria-label="Main navigation" class="section-nav">
       {% for path, title in page_nav %}
-      <a href="{{ path }}?profile={{ selected_profile|urlencode }}" data-profile-link {% if request.url.path == path or path == '/help' and page in ['doctor', 'catalog'] %}aria-current="page"{% endif %}>{{ title }}</a>
+      <a href="{{ path }}?profile={{ selected_profile|urlencode }}" data-profile-link{% if path == '/start' %} class="nav-start{{ '' if configured else ' prominent' }}"{% endif %}{% if request.url.path == path %} aria-current="page"{% endif %}>{{ title }}</a>
       {% endfor %}
     </nav>
     <p class="nav-note">One local endpoint.<br>Your saved rules.</p>
@@ -30,7 +30,7 @@
   <main id="main" tabindex="-1">
     <header class="page-heading">
       <div><div class="eyebrow">{{ 'SAFE DEMO' if demo_mode else 'YOUR LOCAL GATEWAY' }}</div><h1>{{ page_title }}</h1><p>{{ page_description }}</p></div>
-      {% if page != 'playground' %}<label class="profile-picker">Saved profile<select id="profile-select">
+      {% if page not in ['playground', 'start'] %}<label class="profile-picker">Saved profile<select id="profile-select">
         {% for profile in profiles %}<option value="{{ profile.slug }}" {% if profile.slug == selected_profile %}selected{% endif %}>{{ profile.name }} · qm/{{ profile.slug }}</option>{% endfor %}
         {% if not profiles %}<option value="default">Default · configure qm/default</option>{% endif %}
       </select></label>{% endif %}
