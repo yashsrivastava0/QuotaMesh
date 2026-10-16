@@ -40,12 +40,19 @@ def create_app(
     )
 
     @asynccontextmanager
-    async def lifespan(_: FastAPI):
+    async def lifespan(application: FastAPI):
         try:
-            with process_lock(store.data_dir):
+            if getattr(application.state, "lock_held", False):
+                # `quotamesh start` already holds this data directory's lock.
                 yield
+            else:
+                with process_lock(store.data_dir):
+                    yield
         finally:
-            await client.aclose()
+            try:
+                await client.aclose()
+            finally:
+                store.close()
 
     app = FastAPI(
         title="QuotaMesh", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan
@@ -55,6 +62,7 @@ def create_app(
     app.state.bootstrap_token = secrets.token_urlsafe(32)
     app.state.session_token = secrets.token_urlsafe(32)
     app.state.client = client
+    app.state.lock_held = False
     app.state.diagnostic_write_failures = 0
     app.state.degraded = {}
     app.state.accounting_failed = store.accounting_marker.exists()
