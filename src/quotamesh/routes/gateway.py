@@ -39,6 +39,9 @@ MAX_BODY_BYTES = 10 * 1024 * 1024
 MAX_FIRST_EVENT_BYTES = 64 * 1024
 # An injected stream is forwarded event by event; this bounds bytes held awaiting an event end.
 MAX_FRAMED_BYTES = 1024 * 1024
+# A committed stream fails after this long without upstream bytes (or the profile's longer
+# first-event timeout); httpx itself has no read timeout.
+MIN_IDLE_TIMEOUT_S = 60.0
 STREAM_ENDED = (
     b'event: error\ndata: {"error":{"message":"Upstream ended before DONE",'
     b'"type":"upstream_stream"}}\n\n'
@@ -155,6 +158,7 @@ async def relay_stream(
     details: dict[str, Any],
     started: float,
     framed: bool,
+    idle_s: float,
 ) -> AsyncIterator[bytes]:
     """Forward a committed stream; a failure after commitment becomes an SSE error event.
 
@@ -174,7 +178,9 @@ async def relay_stream(
                 chunk = pending.pop(0)
             else:
                 try:
-                    chunk = await anext(chunks)
+                    # A stalled upstream becomes a mid-stream failure (TimeoutError below).
+                    async with asyncio.timeout(idle_s):
+                        chunk = await anext(chunks)
                 except StopAsyncIteration:
                     eof = True
                     break
@@ -551,6 +557,7 @@ async def execute_chat(request: Request, *, candidate=None, request_id=None) -> 
                     details=details,
                     started=started,
                     framed=inject,
+                    idle_s=max(MIN_IDLE_TIMEOUT_S, profile["first_event_timeout_s"]),
                 ),
                 media_type="text/event-stream",
                 headers=qm_headers,

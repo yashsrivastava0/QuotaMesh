@@ -269,3 +269,29 @@ async def test_httpx_timeouts_remain_network_failures_that_degrade(tmp_path):
         assert dry["decisions"][0]["skip_reason"] == "degraded"
     assert calls == ["slow", "working"]
     assert attempts(app)[0]["error_class"] == "network"
+
+
+@pytest.mark.parametrize("stalled", [True, False])
+async def test_idle_timeout_bounds_each_read_after_commit(tmp_path, monkeypatch, stalled):
+    monkeypatch.setattr("quotamesh.routes.gateway.MIN_IDLE_TIMEOUT_S", 0.01)
+    role, content, finish, done = fixture_events("openai", "stream_plain")
+    # Idle limit per read = max(MIN_IDLE_TIMEOUT_S, first_event_timeout_s) = 0.25 s. The steady
+    # stream takes longer than that in total, but never waits that long for one read.
+    parts = (
+        (role, 5.0, content, finish, done)
+        if stalled
+        else (role, 0.1, content, 0.1, finish, 0.1, done)
+    )
+    stream = Events(*parts)
+    app, client, auth = await setup(
+        tmp_path,
+        lambda request: httpx.Response(200, stream=stream, headers=SSE),
+        policy={"first_event_timeout_s": 0.25},
+    )
+    async with client:
+        response = await call(client, auth, stream=True)
+    assert response.status_code == 200 and response.content.startswith(role)
+    assert (b"Upstream stream interrupted" in response.content) is stalled
+    assert (done in response.content) is not stalled
+    assert attempts(app)[-1]["outcome"] == ("MID_STREAM_FAILURE" if stalled else "OK")
+    assert stream.closed
