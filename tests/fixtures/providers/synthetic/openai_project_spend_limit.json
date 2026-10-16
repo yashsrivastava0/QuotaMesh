@@ -1,0 +1,24 @@
+{
+  "source": "synthetic",
+  "note": "Structured spend-limit code with HTTP 429.",
+  "provider": "openai",
+  "case": "openai_project_spend_limit",
+  "status": 429,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "error": {
+      "message": "You have reached the spend limit configured for this project.",
+      "type": "invalid_request_error",
+      "param": null,
+      "code": "project_spend_limit_exceeded"
+    }
+  },
+  "expect": {
+    "kind": "funds_or_account",
+    "scope": "credential",
+    "state": "UNUSABLE",
+    "until": null
+  }
+}

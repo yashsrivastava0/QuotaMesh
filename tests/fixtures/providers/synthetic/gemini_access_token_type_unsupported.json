@@ -1,0 +1,34 @@
+{
+  "source": "synthetic",
+  "note": "Some accounts report this for AQ. keys (docs/live-provider-notes.md D8); treated as an invalid credential.",
+  "provider": "gemini",
+  "case": "gemini_access_token_type_unsupported",
+  "status": 401,
+  "headers": {
+    "content-type": "application/json; charset=UTF-8"
+  },
+  "body": [
+    {
+      "error": {
+        "code": 401,
+        "message": "Request had invalid authentication credentials. Expected OAuth 2 access token, login cookie or other valid authentication credential. See https://developers.google.com/identity/sign-in/web/devconsole-project.",
+        "status": "UNAUTHENTICATED",
+        "details": [
+          {
+            "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+            "reason": "ACCESS_TOKEN_TYPE_UNSUPPORTED",
+            "metadata": {
+              "service": "generativelanguage.googleapis.com"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "expect": {
+    "kind": "auth",
+    "scope": "credential",
+    "state": "INVALID",
+    "until": null
+  }
+}

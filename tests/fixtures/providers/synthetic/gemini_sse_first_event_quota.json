@@ -1,0 +1,24 @@
+{
+  "source": "synthetic",
+  "note": "First SSE event of an HTTP 200 stream. The gateway derives the status from the error object (error_status) before classifying.",
+  "provider": "gemini",
+  "case": "gemini_sse_first_event_quota",
+  "status": 200,
+  "sse_event": true,
+  "headers": {
+    "content-type": "text/event-stream"
+  },
+  "body": {
+    "error": {
+      "code": 429,
+      "message": "Resource has been exhausted (e.g. check quota).",
+      "status": "RESOURCE_EXHAUSTED"
+    }
+  },
+  "expect": {
+    "kind": "rate_limit",
+    "scope": "quota",
+    "state": "COOLDOWN",
+    "until": null
+  }
+}
