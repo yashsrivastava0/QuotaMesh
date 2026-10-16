@@ -231,6 +231,26 @@ async def relay_stream(
             await upstream.aclose()
 
 
+def deadline_response(attempts, last_error_class=None, last_http_status=None, headers=None):
+    """Contract 504 once the profile deadline passes; describes the last attempt, if any."""
+    return JSONResponse(
+        {
+            "error": {
+                "message": "Route attempt deadline exceeded",
+                "type": "deadline_exceeded",
+                "code": "deadline_exceeded",
+            },
+            "quotamesh": {
+                "attempts": attempts,
+                "last_error_class": last_error_class,
+                "last_http_status": last_http_status,
+            },
+        },
+        status_code=504,
+        headers=headers if attempts else None,
+    )
+
+
 def blocked_response(decisions, code="no_candidates", slug="default"):
     now = datetime.now(UTC)
     recoveries = [datetime.fromisoformat(d["recovery_at"]) for d in decisions if d["recovery_at"]]
@@ -328,6 +348,7 @@ async def execute_chat(request: Request, *, candidate=None, request_id=None) -> 
     context_skip = set()
     count = 0
     last_response = None
+    last_attempt = (None, None, {})  # error class, HTTP status and headers of the last attempt
     while count < max_attempts:
         # Recompute after every state change; never use a stale initial pool for fallback.
         decisions, profile, credentials = decision_snapshot(request.app, slug)
@@ -348,7 +369,7 @@ async def execute_chat(request: Request, *, candidate=None, request_id=None) -> 
             break
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            return api_error(504, "Route attempt deadline exceeded", "deadline_exceeded")
+            return deadline_response(count, *last_attempt)
         connection = credentials[selected["credential_id"]]
         selected["credential_revision"] = connection["fingerprint"]
         selected["credential_base_url"] = connection["base_url"]
@@ -506,9 +527,13 @@ async def execute_chat(request: Request, *, candidate=None, request_id=None) -> 
                 latency_ms=int((time.monotonic() - started) * 1000),
             )
             raise
-        except (httpx.HTTPError, TimeoutError):
+        except httpx.HTTPError:  # includes httpx timeouts: the upstream itself misbehaved
             outcome = Outcome("network", True, "target", "DEGRADED")
             status = 504 if time.monotonic() >= deadline else 502
+        except TimeoutError:
+            # The profile deadline ran out; that says nothing about the target, so keep it.
+            outcome = Outcome("deadline", False)
+            status = 504
         except (ValueError, UnicodeDecodeError):
             outcome = Outcome("protocol", True, "target", "DEGRADED")
             status = 502
@@ -543,7 +568,7 @@ async def execute_chat(request: Request, *, candidate=None, request_id=None) -> 
         # Known rejected requests carry zero charge; uncertain transport failures remain unknown.
         if (
             status >= 400
-            and outcome.kind not in {"network", "protocol"}
+            and outcome.kind not in {"network", "protocol", "deadline"}
             or (
                 outcome.kind == "ok"
                 and selected["plan_type"] == "FREE"
@@ -560,6 +585,9 @@ async def execute_chat(request: Request, *, candidate=None, request_id=None) -> 
             error_class=None if outcome.kind == "ok" else outcome.kind,
             latency_ms=int((time.monotonic() - started) * 1000),
         )
+        last_attempt = (None if outcome.kind == "ok" else outcome.kind, status, qm_headers)
+        if outcome.kind == "deadline":
+            return deadline_response(count, *last_attempt)
         last_response = (
             Response(body, status_code=status, media_type=media_type, headers=qm_headers)
             if body and status != 502
@@ -571,7 +599,7 @@ async def execute_chat(request: Request, *, candidate=None, request_id=None) -> 
         if outcome.scope == "next_target":
             context_skip.add(selected["position"])
     if time.monotonic() >= deadline:
-        return api_error(504, "Route attempt deadline exceeded", "deadline_exceeded")
+        return deadline_response(count, *last_attempt)
     if last_response:
         return last_response
     return blocked_response(decisions, slug=slug)

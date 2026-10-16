@@ -1,5 +1,6 @@
 """Gateway contract: first-event errors, stream usage, stream end and deadlines."""
 
+import asyncio
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -204,3 +205,67 @@ async def test_stream_end_needs_done_or_finish_reason_with_clean_close(
     assert response.content[len(sent) :].startswith(appended)
     assert bool(response.content[len(sent) :]) == bool(appended)
     assert attempts(app)[-1]["outcome"] == outcome
+
+
+@pytest.mark.parametrize("streamed", [False, True])
+async def test_deadline_is_a_contract_504_that_does_not_degrade_the_target(tmp_path, streamed):
+    calls = []
+
+    async def handler(request):
+        calls.append(request.headers["authorization"])
+        if len(calls) == 1:  # key 1 is throttled, so the request falls back to key 2
+            return httpx.Response(429, json={"error": {"message": "rate limit"}})
+        if len(calls) == 2:  # key 2 is slower than the whole route deadline
+            if streamed:
+                return httpx.Response(200, stream=Events(5.0, FIRST), headers=SSE)
+            await asyncio.sleep(5)
+        return httpx.Response(200, json={"choices": []})
+
+    app, client, auth = await setup(
+        tmp_path, handler, policy={"nonstream_deadline_s": 0.5, "first_event_timeout_s": 0.5}
+    )
+    async with client:
+        response = await call(client, auth, stream=streamed)
+        assert response.status_code == 504
+        body = response.json()
+        assert body["error"]["code"] == body["error"]["type"] == "deadline_exceeded"
+        assert body["quotamesh"] == {
+            "attempts": 2,
+            "last_error_class": "deadline",
+            "last_http_status": 504,
+        }
+        assert response.headers["x-quotamesh-attempts"] == "2"
+        assert response.headers["x-quotamesh-key"] == "Key 2"
+        assert response.headers["x-quotamesh-profile"] == "default"
+        assert len(response.headers["x-quotamesh-request-id"]) == 32
+        # The deadline says nothing about key 2's target: the next request may use it at once.
+        retry = await call(client, auth)
+        assert retry.status_code == 200 and retry.headers["x-quotamesh-key"] == "Key 2"
+    assert calls == ["Bearer fake-1", "Bearer fake-2", "Bearer fake-2"]
+    cut = attempts(app)[1]
+    assert (cut["error_class"], cut["http_status"]) == ("deadline", 504)
+    assert cut["estimated_cost_usd"] is None  # a cut-off call may have been billed: unknown
+
+
+async def test_httpx_timeouts_remain_network_failures_that_degrade(tmp_path):
+    calls = []
+
+    def handler(request):
+        model = json.loads(request.content)["model"]
+        calls.append(model)
+        if model == "slow":
+            raise httpx.ReadTimeout("synthetic")
+        return httpx.Response(200, json={"choices": []})
+
+    app, client, auth = await setup(
+        tmp_path,
+        handler,
+        keys=[{}],
+        targets=[{"provider_id": "custom", "model": m} for m in ("slow", "working")],
+    )
+    async with client:
+        assert (await call(client, auth)).status_code == 200
+        dry = (await client.get("/api/dry-run", headers=auth)).json()
+        assert dry["decisions"][0]["skip_reason"] == "degraded"
+    assert calls == ["slow", "working"]
+    assert attempts(app)[0]["error_class"] == "network"
