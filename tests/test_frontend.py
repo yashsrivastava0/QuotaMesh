@@ -2,6 +2,7 @@
 
 import re
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import httpx
 import pytest
@@ -35,6 +36,71 @@ async def test_task_pages_are_authenticated_local_and_versioned(tmp_path):
         assert 'id="credential-form"' not in (await client.get("/connect")).text
         assert 'id="test-form"' not in (await client.get("/access")).text
         assert (await client.get("/profiles?profile=missing")).status_code == 404
+
+
+@pytest.mark.parametrize("demo", [False, True])
+async def test_rendered_pages_are_compatible_with_a_strict_csp(tmp_path, demo):
+    """script-src 'self' / style-src 'self': only external scripts and JSON data blocks."""
+    app = create_app(tmp_path, allow_test_host=True)
+    if demo:
+        app.state.demo_mode = True
+        app.state.demo_base_url = "http://127.0.0.1:8799/v1"
+        configure_demo(app, app.state.demo_base_url, "wallet")
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        await client.get("/bootstrap", params={"token": app.state.bootstrap_token})
+        for path in PAGES:
+            html = (await client.get(path)).text
+            for tag in re.findall(r"<script\b[^>]*>", html, re.IGNORECASE):
+                assert re.search(r'\bsrc="/static/', tag) or 'type="application/json"' in tag, (
+                    path,
+                    tag,
+                )
+            assert not re.search(r"<[^>]*\sstyle\s*=", html, re.IGNORECASE), path
+            assert not re.search(r"<[^>]*\son[a-z]+\s*=", html, re.IGNORECASE), path
+            assert "<style" not in html.lower(), path
+            assert "javascript:" not in html.lower(), path
+
+
+def test_bundled_scripts_avoid_html_injection_inline_styles_and_storage():
+    static = Path(__file__).parents[1] / "src" / "quotamesh" / "ui" / "static"
+    scripts = sorted(static.rglob("*.js"))
+    assert any(path.name == "playground.js" for path in scripts)
+    for path in scripts:
+        text = path.read_text(encoding="utf-8")
+        for forbidden in (
+            "innerHTML",
+            "outerHTML",
+            "insertAdjacentHTML",
+            "document.write",
+            "eval(",
+            "new Function",
+            "localStorage",
+            "sessionStorage",
+            "indexedDB",
+            ".style.",
+            "setAttribute('style'",
+        ):
+            assert forbidden not in text, (path.name, forbidden)
+
+
+def test_asset_digest_is_computed_once_per_file_version(tmp_path, monkeypatch):
+    from quotamesh.routes import dashboard
+
+    static = tmp_path / "static"
+    static.mkdir()
+    asset = static / "probe.js"
+    asset.write_text("'use strict';", encoding="utf-8")
+    monkeypatch.setattr(dashboard, "UI", tmp_path)
+    dashboard._asset_digest.cache_clear()
+    first = dashboard.asset_url("probe.js")
+    assert re.fullmatch(r"/static/probe\.js\?v=[a-f0-9]{12}", first)
+    assert dashboard.asset_url("probe.js") == first
+    assert dashboard._asset_digest.cache_info().hits == 1
+    asset.write_text("'use strict'; // changed", encoding="utf-8")
+    assert dashboard.asset_url("probe.js") != first
+    dashboard._asset_digest.cache_clear()
 
 
 async def test_configuration_field_errors_do_not_echo_inputs(tmp_path):

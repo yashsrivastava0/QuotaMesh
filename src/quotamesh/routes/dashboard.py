@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import hashlib
 from datetime import UTC, datetime
 from pathlib import Path
@@ -40,6 +41,11 @@ PAGES = {
         "Profiles",
         "Choose exact models, target order, and spending rules for each app.",
     ),
+    "/playground": (
+        "playground",
+        "Playground",
+        "Chat with a saved profile and see which provider answered, with tokens, timing and cost.",
+    ),
     "/route": ("route", "Route & test", "Inspect your saved rules before sending a request."),
     "/connect": ("connect", "Connect", "Use one local endpoint with your app’s saved profile."),
     "/activity": (
@@ -61,9 +67,16 @@ PAGES = {
 }
 
 
+@functools.lru_cache(maxsize=64)
+def _asset_digest(name: str, mtime_ns: int, size: int) -> str:
+    # Keyed by modification time and size, so an edited asset gets a new digest
+    # without hashing every bundled file on every page render.
+    return hashlib.sha256((UI / "static" / name).read_bytes()).hexdigest()[:12]
+
+
 def asset_url(name: str) -> str:
-    digest = hashlib.sha256((UI / "static" / name).read_bytes()).hexdigest()[:12]
-    return f"/static/{name}?v={digest}"
+    info = (UI / "static" / name).stat()
+    return f"/static/{name}?v={_asset_digest(name, info.st_mtime_ns, info.st_size)}"
 
 
 def _dashboard_context(request: Request, *, error: str | None = None) -> dict[str, Any]:
@@ -223,6 +236,7 @@ def bootstrap(request: Request, token: str = "") -> Response:
 @router.get("/", response_class=HTMLResponse)
 @router.get("/access", response_class=HTMLResponse)
 @router.get("/profiles", response_class=HTMLResponse)
+@router.get("/playground", response_class=HTMLResponse)
 @router.get("/route", response_class=HTMLResponse)
 @router.get("/connect", response_class=HTMLResponse)
 @router.get("/activity", response_class=HTMLResponse)

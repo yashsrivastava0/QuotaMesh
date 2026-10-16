@@ -1,3 +1,5 @@
+let targetRowCount = 0;
+
 function targetRow(target = {}) {
   const row = node('div', undefined, 'target-row');
   const top = node('div', undefined, 'target-top');
@@ -13,18 +15,27 @@ function targetRow(target = {}) {
   }
   row.append(top);
   const grid = node('div', undefined, 'policy-grid');
-  const provider = select(providers.map(p => [p, p]), target.provider_id || 'custom'); provider.dataset.field = 'provider_id';
+  // A new row starts with the provider of the first saved API key, not the generic preset.
+  const provider = select(providers.map(p => [p, p]), target.provider_id || state.credentials[0]?.provider_id || 'custom'); provider.dataset.field = 'provider_id';
   const model = input(target.model); model.dataset.field = 'model'; model.required = true; model.maxLength = 200; model.placeholder = 'Exact upstream model ID';
+  const suggestions = node('datalist'); suggestions.id = 'target-models-'+(++targetRowCount); model.setAttribute('list', suggestions.id);
   const credential = select([], ''); credential.dataset.field = 'credential_id';
-  function fillPool(value) {
+  // Refill key choices and saved model-list suggestions from the latest state, keeping the
+  // current choice (a removed pinned key stays visible until the user replaces it).
+  row.refreshChoices = (value = credential.value) => {
+    const chosen = value == null ? '' : String(value);
     credential.replaceChildren();
-    for (const [id, label] of [['', 'Provider pool (by priority)'], ...state.credentials.filter(c => c.provider_id === provider.value).map(c => [c.id, c.label])]) {
+    for (const [id, label] of [['', 'Provider pool (by priority)'], ...state.credentials.filter(c => c.provider_id === provider.value).map(c => [String(c.id), c.label])]) {
       const option = node('option', label); option.value = id; credential.append(option);
     }
-    credential.value = String(value ?? '');
-  }
-  fillPool(target.credential_id); provider.onchange = () => fillPool(null);
-  grid.append(field('Provider', provider), field('Upstream model', model), field('Key choice', credential)); row.append(grid);
+    if (chosen && ![...credential.options].some(o => o.value === chosen)) { const option = node('option', 'Unavailable key #'+chosen+' — choose a replacement'); option.value = chosen; credential.append(option); }
+    credential.value = chosen;
+    const keys = new Set(state.credentials.filter(c => c.provider_id === provider.value && (!chosen || String(c.id) === chosen)).map(c => c.id));
+    const models = new Set(diagnosticData.filter(c => keys.has(c.credential_id)).flatMap(c => c.models || []));
+    suggestions.replaceChildren(...[...models].sort().map(id => { const option = node('option'); option.value = id; return option; }));
+  };
+  row.refreshChoices(target.credential_id); provider.onchange = () => row.refreshChoices(''); credential.addEventListener('change', () => row.refreshChoices());
+  grid.append(field('Provider', provider), field('Upstream model', model), field('Key choice', credential)); row.append(grid, suggestions);
   const details = node('details'); details.append(node('summary', 'Optional manual token prices (USD / million tokens)'));
   details.append(node('p', 'Use your provider’s current model price. Both prices are required for capped paid routing. This is a local estimate; missing usage stays unknown.', 'fine'));
   const prices = node('div', undefined, 'two-col');

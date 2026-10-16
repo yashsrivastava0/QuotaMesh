@@ -191,3 +191,48 @@ dialog::backdrop { background: #18312166; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
 }
+
+/* Playground */
+.visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.playground-settings { display: grid; grid-template-columns: minmax(0, 1.4fr) auto minmax(0, .7fr); gap: 16px; align-items: end; }
+.playground-settings label { margin-bottom: 0; }
+.check.inline { display: inline-flex; align-items: center; margin: 0; padding: 11px 12px; }
+.check.inline input { margin-top: 0; }
+.route-hint { margin: 12px 0 0; font-size: 13px; color: var(--muted); }
+.transcript { display: flex; flex-direction: column; gap: 16px; margin: 20px 0; padding: 16px; min-height: 160px; max-height: 70vh; overflow-y: auto; background: #f8faf7; border: 1px solid var(--line); border-radius: var(--radius); }
+.transcript-empty { margin: auto; text-align: center; color: var(--muted); font-size: 14px; max-width: 46ch; }
+.message { max-width: min(760px, 92%); min-width: 0; }
+.message.user { align-self: flex-end; }
+.message.assistant { align-self: flex-start; }
+.message-role { font-size: 13px; font-weight: 650; color: var(--muted); margin-bottom: 4px; }
+.message.user .message-role { text-align: right; }
+.bubble { padding: 12px 15px; border-radius: 14px; font-size: 14px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid var(--line); background: #fff; color: #202c28; }
+.message.user .bubble { background: #dfebe2; border-color: transparent; }
+.message.unanswered .bubble { opacity: .7; border-style: dashed; }
+.bubble.pending { color: var(--muted); font-style: italic; }
+.message .note { font-size: 13px; color: var(--muted); margin: 6px 0 0; }
+.tool-call { margin-top: 8px; padding: 8px 12px; border-radius: 6px; background: #edf2ec; font-family: ui-monospace, Consolas, monospace; font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.meta-strip { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 8px; font-size: 13px; color: var(--muted); }
+.meta-strip strong { color: #202c28; font-weight: 600; }
+.meta-strip a { font-size: 13px; }
+.trace { margin-top: 8px; padding-top: 8px; }
+.trace ol { margin: 8px 0 0; padding-left: 20px; font-size: 13px; color: var(--muted); line-height: 1.7; }
+.trace li { margin-bottom: 8px; overflow-wrap: anywhere; }
+.error-card { padding: 14px 16px; border: 1px solid #d8aba3; background: #fff0ea; color: #7c3025; border-radius: var(--radius); font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; }
+.error-card.warn { border-color: #e3c98a; background: #fcf2d8; color: #6b4705; }
+.error-card strong { display: block; margin-bottom: 4px; }
+.error-card p { color: inherit; margin: 4px 0; font-size: 13px; }
+.error-card ul { margin: 8px 0; padding-left: 20px; font-size: 13px; }
+.error-card a { color: inherit; font-weight: 600; }
+.composer label { margin-bottom: 8px; }
+.composer textarea { min-height: 96px; }
+.request-trace.highlight { border-color: var(--accent); box-shadow: 0 0 0 2px #cfe3d6; }
+@media (max-width: 850px) {
+  .playground-settings { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .playground-settings > :first-child { grid-column: 1 / -1; }
+}
+@media (max-width: 600px) {
+  .playground-settings { grid-template-columns: 1fr; }
+  .message { max-width: 100%; }
+  .transcript { padding: 12px; }
+}
