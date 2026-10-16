@@ -51,7 +51,7 @@ let doctorController = null;
 const credentialDeleteConfirmations = new Set();
 
 const reasons = {
-  no_credentials: 'No credential matches this target provider',
+  no_credentials: 'No API key is saved for this target provider',
   disabled: 'Disabled by you or the route', expired: 'Expiry date has passed', invalid: 'Key rejected — replace or rotate it',
   unusable: 'Account, billing, or regional access blocked', paid_blocked: 'Paid use is off for this route', trial_blocked: 'Trial use is off',
   missing_secret: 'Environment variable is unavailable in the running process', cooldown: 'Temporarily rate limited', exhausted: 'Explicit daily quota/reset evidence',

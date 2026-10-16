@@ -136,7 +136,7 @@ quotamesh import-env --file .env --store reference                 # keep only v
 in the dashboard. `--store reference` saves only the variable name; the server process then
 needs that variable, for example by starting it with `quotamesh start --env-file .env`.
 Keys of one provider project share one quota; give keys from different projects
-different quota groups in API access so one rate limit does not pause the others.
+different quota groups on the API keys page so one rate limit does not pause the others.
 [`.env.example`](.env.example) is a template; `.env` is git-ignored.
 
 ## How routing works
@@ -301,7 +301,7 @@ OpenAI shape `{"error": {"message", "type", "code"}}` and never contain provider
 | `503` | With code `no_candidates`, nothing is eligible: the body lists each target's skip reason and the Route page explains it. An upstream 503 (for example Gemini "high demand") means the provider is overloaded: retry, use streaming, or add a backup target. |
 | `504 deadline_exceeded` | No target answered in the profile's deadline. Gemini non-stream calls are slow; stream instead, or raise the deadline in Profiles. |
 | `400` from the provider | The request itself was rejected (for example `max_tokens` on GPT-5 models); it is returned unchanged and is not retried. |
-| A key shows INVALID | The provider rejected it. Rotate it in API access, or run Doctor and then `quotamesh reset ID` if it was a transient mistake. |
+| A key shows INVALID | The provider rejected it. Rotate it on the API keys page, or run Diagnostics and then `quotamesh reset ID` if it was a transient mistake. |
 
 ## Development and tests
 

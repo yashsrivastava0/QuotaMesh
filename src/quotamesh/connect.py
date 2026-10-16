@@ -7,9 +7,9 @@ from urllib.parse import quote
 from quotamesh.routing import runtime_snapshot
 
 REASONS = {
-    "no_credentials": "No credential matches this provider target.",
-    "disabled": "The profile or credential is disabled.",
-    "expired": "The credential expiry date has passed.",
+    "no_credentials": "No API key is saved for this target's provider.",
+    "disabled": "The profile or this API key is disabled.",
+    "expired": "This API key's expiry date has passed.",
     "invalid": "The key was rejected; rotate or explicitly retest it.",
     "unusable": "Account, billing, or regional access is blocked.",
     "trial_blocked": "This profile does not allow trial access.",
@@ -25,9 +25,9 @@ REASONS = {
 }
 
 RECOVERY = {
-    "no_credentials": ("add_access", "Add matching API access"),
-    "disabled": ("review_enabled", "Review enabled access and profile"),
-    "expired": ("review_expiry", "Review expiry or replace access"),
+    "no_credentials": ("add_access", "Add an API key for this provider"),
+    "disabled": ("review_enabled", "Review the enabled key and profile"),
+    "expired": ("review_expiry", "Review expiry or replace the key"),
     "invalid": ("rotate_access", "Replace the rejected key"),
     "unusable": ("diagnose_access", "Check account access"),
     "trial_blocked": ("review_policy", "Review trial permission"),
