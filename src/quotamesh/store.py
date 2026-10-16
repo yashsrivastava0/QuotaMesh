@@ -1,28 +1,74 @@
-"""Small SQLite repository. Every operation owns a short transaction."""
+"""Small SQLite repository. Every operation owns a short transaction.
+
+Connections are reused per thread instead of being opened for every operation: opening a
+connection repeats its PRAGMAs, loses the prepared-statement cache, and closing the last
+connection checkpoints and deletes the WAL file. See :meth:`Store.connection` for the
+transaction rules and :meth:`Store.close` for the handle lifecycle.
+"""
 
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
+import logging
 import os
 import secrets
 import sqlite3
+import threading
+import weakref
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+LOG = logging.getLogger("quotamesh")
+
 
 def utc_now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+class _ThreadConnection:
+    """One thread's reusable connection and its ``Store.connection()`` nesting depth."""
+
+    __slots__ = ("__weakref__", "conn", "depth", "generation")
+
+    def __init__(self, conn: sqlite3.Connection, generation: int):
+        self.conn = conn
+        self.depth = 0
+        self.generation = generation
+
+
+def _close_quietly(conn: sqlite3.Connection) -> None:
+    try:
+        conn.close()
+    except sqlite3.Error:
+        LOG.warning("Could not close a local database connection")
+
+
+def _release(registry: set, lock: threading.Lock, conn: sqlite3.Connection) -> None:
+    """Close one thread's connection when that thread (and its local state) goes away."""
+    with lock:
+        registry.discard(conn)
+    _close_quietly(conn)
+
+
+def _close_all(registry: set, lock: threading.Lock) -> None:
+    with lock:
+        connections = list(registry)
+        registry.clear()
+    for conn in connections:
+        _close_quietly(conn)
 
 
 class DuplicateCredential(ValueError):
     """A sanitized management conflict, never containing secret material."""
 
 
-def reject_duplicate(conn, provider, base_url, secret, env, exclude=0):
+def find_duplicate(conn, provider, base_url, secret, env, exclude=0):
+    """Return the ID of saved access with the same reference or effective secret, if any."""
     effective = secret or os.environ.get(env or "")
     for row in conn.execute(
         "SELECT c.id,s.secret_value,s.env_name FROM credentials c JOIN secrets s "
@@ -32,12 +78,22 @@ def reject_duplicate(conn, provider, base_url, secret, env, exclude=0):
     ):
         other = row["secret_value"] or os.environ.get(row["env_name"] or "")
         if (env and env == row["env_name"]) or (effective and effective == other):
-            raise DuplicateCredential(
-                "This API access is already configured; edit the existing credential."
-            )
+            return row["id"]
+    return None
+
+
+def reject_duplicate(conn, provider, base_url, secret, env, exclude=0):
+    if find_duplicate(conn, provider, base_url, secret, env, exclude) is not None:
+        raise DuplicateCredential(
+            "This API access is already configured; edit the existing credential."
+        )
 
 
 class Store:
+    # Retention pruning runs at startup and after every PRUNE_EVERY recorded attempts,
+    # instead of two DELETE statements inside every attempt transaction.
+    PRUNE_EVERY = 500
+
     def __init__(self, data_dir: Path):
         self.data_dir = data_dir
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -45,22 +101,117 @@ class Store:
             self.data_dir.chmod(0o700)
         self.path = data_dir / "quotamesh.db"
         self.accounting_marker = data_dir / "paid-accounting-incomplete"
-        self._migrate()
+        self._local = threading.local()
+        self._lock = threading.Lock()
+        self._registry: set[sqlite3.Connection] = set()
+        self._generation = 0
+        self._inserts = itertools.count(1)
+        # Short-lived stores (tests, CLI commands) release their handles when collected.
+        self._finalizer = weakref.finalize(self, _close_all, self._registry, self._lock)
+        try:
+            self._migrate()
+        except BaseException:
+            self.close()
+            raise
+
+    def _thread_connection(self) -> _ThreadConnection:
+        state = getattr(self._local, "state", None)
+        # Never swap connections underneath an open transaction, even after close().
+        if state is not None and (state.depth or state.generation == self._generation):
+            return state
+        # check_same_thread=False only lets close()/finalizers run from another thread;
+        # each connection is otherwise used exclusively by the thread that opened it.
+        conn = sqlite3.connect(self.path, timeout=5, check_same_thread=False)
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA foreign_keys=ON")
+            conn.execute("PRAGMA busy_timeout=5000")
+            conn.execute("PRAGMA synchronous=NORMAL")
+        except BaseException:
+            conn.close()
+            raise
+        state = _ThreadConnection(conn, self._generation)
+        with self._lock:
+            self._registry.add(conn)
+        # A finished worker thread drops its local state; close its connection with it.
+        weakref.finalize(state, _release, self._registry, self._lock, conn)
+        self._local.state = state
+        return state
 
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:
-        conn = sqlite3.connect(self.path, timeout=5)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys=ON")
-        conn.execute("PRAGMA busy_timeout=5000")
+        """Yield this thread's connection inside one short transaction.
+
+        The outermost ``with`` commits on success and rolls back on any exception. A nested
+        ``with`` on the same thread uses ``SAVEPOINT``/``RELEASE``/``ROLLBACK TO`` when a
+        transaction is already open, so an inner failure undoes only the inner work. When
+        no transaction is open yet, the nested level owns its own transaction (exactly like
+        the separate connection it used to open). Code inside the block must not ``await``:
+        coroutines on the event-loop thread share one connection.
+
+        Durability: connections use WAL with ``synchronous=NORMAL``. A crash of QuotaMesh
+        itself loses no committed data; only an operating-system crash or power loss can
+        lose the most recent commits (the database stays consistent).
+        """
+        state = self._thread_connection()
+        conn = state.conn
+        savepoint = None
+        if state.depth and conn.in_transaction:
+            savepoint = f"quotamesh_level_{state.depth}"
+            conn.execute(f"SAVEPOINT {savepoint}")
+        elif not state.depth and conn.in_transaction:
+            # Never inherit a transaction that an interrupted exit left open.
+            conn.rollback()
+        state.depth += 1
         try:
             yield conn
-            conn.commit()
-        except Exception:
-            conn.rollback()
+        except BaseException:
+            state.depth -= 1
+            self._undo(conn, savepoint)
             raise
-        finally:
-            conn.close()
+        state.depth -= 1
+        if savepoint is None:
+            try:
+                conn.commit()
+            except BaseException:
+                self._undo(conn, None)
+                raise
+        elif conn.in_transaction:
+            conn.execute(f"RELEASE {savepoint}")
+
+    @staticmethod
+    def _undo(conn: sqlite3.Connection, savepoint: str | None) -> None:
+        """Roll back one level without masking the exception that caused it."""
+        try:
+            if savepoint is None:
+                conn.rollback()
+            elif conn.in_transaction:
+                conn.execute(f"ROLLBACK TO {savepoint}")
+                conn.execute(f"RELEASE {savepoint}")
+        except sqlite3.Error:
+            # SQLite may already have rolled the whole transaction back (for example
+            # after SQLITE_FULL); the original exception is the one worth raising.
+            pass
+
+    @staticmethod
+    def _begin_immediate(conn: sqlite3.Connection) -> None:
+        """Take the write lock up front, unless an enclosing level already opened a transaction."""
+        if not conn.in_transaction:
+            conn.execute("BEGIN IMMEDIATE")
+
+    def close(self) -> None:
+        """Close every connection this store opened, in all threads.
+
+        Called from the app lifespan shutdown so the database, WAL and shared-memory files
+        are released (Windows cannot delete open files). The store stays usable: the next
+        operation in any thread opens a fresh connection.
+        """
+        with self._lock:
+            self._generation += 1
+            connections = list(self._registry)
+            self._registry.clear()
+        for conn in connections:
+            _close_quietly(conn)
 
     def _migrate(self) -> None:
         with self.connection() as conn:
@@ -380,14 +531,19 @@ class Store:
             from quotamesh.usage import record_rollup
 
             record_rollup(conn, values)
-            conn.execute(
-                "DELETE FROM attempts WHERE ts<?",
-                ((datetime.fromisoformat(values["ts"]) - timedelta(days=30)).isoformat(),),
-            )
-            conn.execute(
-                "DELETE FROM attempts WHERE request_id IN "
-                "(SELECT request_id FROM attempts ORDER BY id DESC LIMIT -1 OFFSET 50000)"
-            )
+        if next(self._inserts) % self.PRUNE_EVERY == 0:
+            self._prune_after_insert(values["ts"])
+
+    def _prune_after_insert(self, ts: str) -> None:
+        """Periodic retention; a failure here never un-records the committed attempt."""
+        try:
+            now = datetime.fromisoformat(ts)
+        except (TypeError, ValueError):
+            now = datetime.now(UTC)
+        try:
+            self.prune_history(now)
+        except sqlite3.Error:
+            LOG.warning("Could not prune request history; it is retried later")
 
     def recent_attempts(self, limit: int = 10) -> list[dict[str, Any]]:
         with self.connection() as conn:
@@ -472,7 +628,7 @@ class Store:
             fingerprint=hashlib.sha256((secret or env).encode()).hexdigest()[:12],
         )
         with self.connection() as conn:
-            conn.execute("BEGIN IMMEDIATE")
+            self._begin_immediate(conn)
             reject_duplicate(conn, values["provider_id"], values["base_url"], secret, env)
             cursor = conn.execute(
                 f"INSERT INTO credentials ({','.join(values)}) VALUES ({','.join('?' for _ in values)})",
@@ -482,6 +638,11 @@ class Store:
             conn.execute("INSERT INTO secrets VALUES (?,?,?)", (identifier, secret, env))
             return identifier
 
+    def configured_secret(self, provider_id, base_url, secret):
+        """ID of saved access whose effective secret equals ``secret`` (never returns it)."""
+        with self.connection() as conn:
+            return find_duplicate(conn, provider_id, base_url, secret, None)
+
     def save_policy(self, policy, targets, slug="default"):
         self.save_profile(slug, policy, targets)
 
@@ -489,7 +650,7 @@ class Store:
         from quotamesh.policy import Policy
 
         with self.connection() as conn:
-            conn.execute("BEGIN IMMEDIATE")
+            self._begin_immediate(conn)
             if conn.execute("SELECT 1 FROM profile_targets WHERE profile_id=1").fetchone():
                 raise ValueError("Default is already configured; edit its project profile.")
             key = conn.execute(
@@ -518,7 +679,7 @@ class Store:
         if not rows:
             return
         with self.connection() as conn:
-            conn.execute("BEGIN IMMEDIATE")
+            self._begin_immediate(conn)
             current = conn.execute(
                 "SELECT fingerprint,base_url FROM credentials WHERE id=? AND deleted_at IS NULL",
                 (decision["credential_id"],),
@@ -592,6 +753,8 @@ class Store:
                     # A success already in flight must not erase a more recent throttle.
                     return
                 state = next_quota_state(dict(row) if row else {}, outcome, now)
+                if row and all(row[name] == state[name] for name in state):
+                    return  # Steady-state success: skip a write that would change nothing.
                 conn.execute(
                     """INSERT INTO quota_state VALUES(?,?,?,?,?,?)
                     ON CONFLICT(quota_group,model) DO UPDATE SET status=excluded.status,
@@ -697,7 +860,7 @@ class Store:
 
     def edit_credential(self, identifier, values):
         with self.connection() as conn:
-            conn.execute("BEGIN IMMEDIATE")
+            self._begin_immediate(conn)
             row = conn.execute(
                 "SELECT * FROM credentials WHERE id=? AND deleted_at IS NULL", (identifier,)
             ).fetchone()

@@ -17,6 +17,7 @@ from quotamesh.lifecycle import process_lock
 from quotamesh.routes.connect import router as connect_router
 from quotamesh.routes.dashboard import router as dashboard_router
 from quotamesh.routes.gateway import router as gateway_router
+from quotamesh.routes.session import router as session_router
 from quotamesh.routes.wallet import router as wallet_router
 from quotamesh.security import local_host_guard
 from quotamesh.store import Store
@@ -40,21 +41,31 @@ def create_app(
     )
 
     @asynccontextmanager
-    async def lifespan(_: FastAPI):
+    async def lifespan(application: FastAPI):
         try:
-            with process_lock(store.data_dir):
+            if getattr(application.state, "lock_held", False):
+                # `quotamesh start` already holds this data directory's lock.
                 yield
+            else:
+                with process_lock(store.data_dir):
+                    yield
         finally:
-            await client.aclose()
+            try:
+                await client.aclose()
+            finally:
+                store.close()
 
     app = FastAPI(
         title="QuotaMesh", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan
     )
     app.state.store = store
     app.state.local_key = store.gateway_key()
+    # The printed one-time link never expires until used; CLI/browser links expire (security.py).
     app.state.bootstrap_token = secrets.token_urlsafe(32)
+    app.state.bootstrap_tokens = {app.state.bootstrap_token: None}
     app.state.session_token = secrets.token_urlsafe(32)
     app.state.client = client
+    app.state.lock_held = False
     app.state.diagnostic_write_failures = 0
     app.state.degraded = {}
     app.state.accounting_failed = store.accounting_marker.exists()
@@ -66,4 +77,5 @@ def create_app(
     app.include_router(gateway_router)
     app.include_router(wallet_router)
     app.include_router(connect_router)
+    app.include_router(session_router)
     return app
