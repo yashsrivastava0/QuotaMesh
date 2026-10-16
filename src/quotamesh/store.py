@@ -558,6 +558,17 @@ class Store:
                 )
             ]
 
+    def request_trace(self, request_id: str) -> list[dict[str, Any]]:
+        """Ordered metadata rows of one request (attempts hold no prompt or reply text)."""
+        with self.connection() as conn:
+            return [
+                dict(row)
+                for row in conn.execute(
+                    "SELECT * FROM attempts WHERE request_id=? ORDER BY attempt_idx,id",
+                    (request_id,),
+                )
+            ]
+
     def routing_snapshot(self, now, slug="default"):
         with self.connection() as conn:
             row = conn.execute(
@@ -646,7 +657,9 @@ class Store:
     def save_policy(self, policy, targets, slug="default"):
         self.save_profile(slug, policy, targets)
 
-    def setup_default(self, identifier, model):
+    def setup_default(self, identifier, model, *, input_price=None, output_price=None, **policy):
+        """Atomically create default's single target; ``policy`` holds optional Policy fields
+        (allow_paid, paid caps, allow_unknown_price). Paid stays off unless explicitly set."""
         from quotamesh.policy import Policy
 
         with self.connection() as conn:
@@ -659,20 +672,26 @@ class Store:
             ).fetchone()
             if not key:
                 raise LookupError("Credential not found")
-            policy = Policy(
-                targets=[{"provider_id": key[0], "model": model, "credential_id": identifier}]
-            ).model_dump()
-            policy.pop("targets")
+            target = {
+                "provider_id": key[0],
+                "model": model,
+                "credential_id": identifier,
+                "input_price": input_price,
+                "output_price": output_price,
+            }
+            values = Policy(targets=[target], **policy).model_dump()
+            target = values.pop("targets")[0]
             conn.execute(
                 "INSERT OR IGNORE INTO project_profiles(id,name,slug) VALUES(1,'Default','default')"
             )
             conn.execute(
-                "UPDATE project_profiles SET " + ",".join(k + "=?" for k in policy) + " WHERE id=1",
-                tuple(policy.values()),
+                "UPDATE project_profiles SET " + ",".join(k + "=?" for k in values) + " WHERE id=1",
+                tuple(values.values()),
             )
             conn.execute(
-                "INSERT INTO profile_targets(profile_id,position,provider_id,model,credential_id) VALUES(1,1,?,?,?)",
-                (key[0], model, identifier),
+                "INSERT INTO profile_targets(profile_id,position,provider_id,model,credential_id,"
+                "input_price,output_price) VALUES(1,1,?,?,?,?,?)",
+                (key[0], model, identifier, target["input_price"], target["output_price"]),
             )
 
     def save_rates(self, decision, rows):

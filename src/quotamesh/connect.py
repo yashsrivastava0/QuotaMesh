@@ -2,6 +2,7 @@
 
 import json
 from datetime import datetime
+from urllib.parse import quote
 
 from quotamesh.routing import runtime_snapshot
 
@@ -42,13 +43,38 @@ RECOVERY = {
 }
 
 
-def recovery_action(decision):
+def recovery_href(code, decision, slug="default", profile_enabled=True):
+    """Relative link to the page that fixes ``code`` for this profile and key."""
+    profile = quote(slug or "default", safe="")
+    credential = decision.get("credential_id")
+    key = f"&credential={credential}" if credential is not None else ""
+    if code == "add_access":
+        provider = quote(decision.get("provider_id") or "custom", safe="")
+        return f"/access?profile={profile}&provider={provider}"
+    if code in {"review_expiry", "rotate_access", "review_environment"}:
+        return f"/access?profile={profile}{key}"
+    if code in {"wait", "diagnose_access"}:
+        return f"/help/doctor?profile={profile}{key}"
+    if code == "review_enabled" and profile_enabled and credential is not None:
+        return f"/access?profile={profile}{key}"  # The key itself is disabled.
+    if code in {"review_enabled", "review_policy", "review_prices"}:
+        return f"/profiles?profile={profile}"
+    if code in {"review_cap", "review_cost"}:
+        return f"/route?profile={profile}#spend"
+    if code == "repair_accounting":
+        return f"/route?profile={profile}#accounting"
+    return f"/route?profile={profile}"
+
+
+def recovery_action(decision, slug="default", profile_enabled=True):
+    """Next step for a skipped candidate; pass the profile slug so ``href`` targets it."""
     code, label = RECOVERY.get(decision["skip_reason"], ("inspect", "Inspect saved rules"))
     return {
         "code": code,
         "label": label,
         "credential_id": decision.get("credential_id"),
         "position": decision.get("position"),
+        "href": recovery_href(code, decision, slug, profile_enabled),
     }
 
 
@@ -57,11 +83,12 @@ def explain(app, slug):
     profile = snapshot["profile"]
     if profile is None and slug != "default":
         raise LookupError("Profile not found")
+    enabled = bool(profile and profile["enabled"])
     decisions = [
         {
             **d,
             "explanation": REASONS.get(d["skip_reason"], "Eligible under the saved policy."),
-            "recovery_action": None if d["eligible"] else recovery_action(d),
+            "recovery_action": None if d["eligible"] else recovery_action(d, slug, enabled),
         }
         for d in snapshot["decisions"]
     ]
