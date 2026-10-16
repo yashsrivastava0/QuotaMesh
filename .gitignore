@@ -15,3 +15,10 @@ dist/
 build/
 *.swp
 output/
+.env
+.env.*
+!.env.example
+# Local QuotaMesh runtime files, in case QUOTAMESH_DATA_DIR points inside the repo.
+gateway-key
+gateway.lock
+paid-accounting-incomplete
