@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import secrets
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -22,7 +21,9 @@ from quotamesh.security import (
     api_error,
     browser_authorized,
     configuration_error,
+    consume_bootstrap_token,
     management_authorized,
+    session_cookie_name,
 )
 from quotamesh.store import DuplicateCredential
 from quotamesh.usage import summarize
@@ -177,15 +178,44 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+LINK_USED = (
+    "This login link was already used or has expired. "
+    "Run <code>quotamesh open</code> to get a new one."
+)
+DASHBOARD_LOCKED = (
+    "This browser is not signed in to the local dashboard, or its session ended when "
+    "QuotaMesh restarted. Run <code>quotamesh open</code> to get a new login link."
+)
+
+
+def login_page(status: int, message: str) -> HTMLResponse:
+    """A small static page (no scripts or inline styles) with the way back in."""
+    return HTMLResponse(
+        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        "<title>Sign in · QuotaMesh</title></head><body><main>"
+        f"<h1>QuotaMesh</h1><p>{message}</p></main></body></html>",
+        status_code=status,
+        headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
+    )
+
+
 @router.get("/bootstrap")
 def bootstrap(request: Request, token: str = "") -> Response:
-    state = request.app.state
-    if not state.bootstrap_token or not secrets.compare_digest(token, state.bootstrap_token):
-        return api_error(403, "Bootstrap link is invalid or has already been used", "forbidden")
-    state.bootstrap_token = None
-    response = RedirectResponse("/", status_code=303)
+    if browser_authorized(request):
+        # Already signed in: keep the link usable (for example in another browser).
+        return RedirectResponse("/", status_code=303)
+    if not consume_bootstrap_token(request.app, token):
+        return login_page(403, LINK_USED)
+    response = RedirectResponse(
+        "/", status_code=303, headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
+    )
     response.set_cookie(
-        "qm_session", state.session_token, httponly=True, samesite="strict", path="/"
+        session_cookie_name(request),
+        request.app.state.session_token,
+        httponly=True,
+        samesite="strict",
+        path="/",
     )
     return response
 
@@ -201,10 +231,7 @@ def bootstrap(request: Request, token: str = "") -> Response:
 @router.get("/help/catalog", response_class=HTMLResponse)
 def home(request: Request) -> Response:
     if not browser_authorized(request):
-        return HTMLResponse(
-            "Local dashboard locked. Open the bootstrap URL printed by `quotamesh start`.",
-            status_code=401,
-        )
+        return login_page(401, DASHBOARD_LOCKED)
     slug = request.query_params.get("profile", "default")
     if slug != "default" and not any(p["slug"] == slug for p in request.app.state.store.profiles()):
         return HTMLResponse(

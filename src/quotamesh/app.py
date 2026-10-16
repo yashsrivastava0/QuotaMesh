@@ -17,6 +17,7 @@ from quotamesh.lifecycle import process_lock
 from quotamesh.routes.connect import router as connect_router
 from quotamesh.routes.dashboard import router as dashboard_router
 from quotamesh.routes.gateway import router as gateway_router
+from quotamesh.routes.session import router as session_router
 from quotamesh.routes.wallet import router as wallet_router
 from quotamesh.security import local_host_guard
 from quotamesh.store import Store
@@ -59,7 +60,9 @@ def create_app(
     )
     app.state.store = store
     app.state.local_key = store.gateway_key()
+    # The printed one-time link never expires until used; CLI/browser links expire (security.py).
     app.state.bootstrap_token = secrets.token_urlsafe(32)
+    app.state.bootstrap_tokens = {app.state.bootstrap_token: None}
     app.state.session_token = secrets.token_urlsafe(32)
     app.state.client = client
     app.state.lock_held = False
@@ -74,4 +77,5 @@ def create_app(
     app.include_router(gateway_router)
     app.include_router(wallet_router)
     app.include_router(connect_router)
+    app.include_router(session_router)
     return app

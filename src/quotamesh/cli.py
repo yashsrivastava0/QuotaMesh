@@ -22,6 +22,7 @@ from rich.table import Table
 from quotamesh import __version__
 from quotamesh.app import create_app
 from quotamesh.config import data_directory
+from quotamesh.security import mint_bootstrap_token
 from quotamesh.store import Store
 from quotamesh.wallet import snapshot
 
@@ -55,9 +56,9 @@ def run_server(server, port, browser):
         def open_when_ready():
             for _ in range(300):
                 if runner.started:
-                    webbrowser.open(
-                        f"http://127.0.0.1:{port}/bootstrap?token={server.state.bootstrap_token}"
-                    )
+                    # A separate expiring token keeps the printed link usable elsewhere.
+                    token = mint_bootstrap_token(server)
+                    webbrowser.open(f"http://127.0.0.1:{port}/bootstrap?token={token}")
                     return
                 if runner.should_exit:
                     return
@@ -116,6 +117,40 @@ def start(port: int = typer.Option(8787, min=1, max=65535), browser: bool = True
     console.print("Open this one-time dashboard URL:")
     console.print(url, soft_wrap=True)
     run_server(server, port, browser)
+
+
+@app.command("open")
+def open_dashboard(
+    port: int = typer.Option(8787, min=1, max=65535),
+    print_url: Annotated[
+        bool, typer.Option("--print", help="Print the one-time link instead of opening it")
+    ] = False,
+) -> None:
+    """Open the running dashboard with a fresh one-time login link (valid for 2 minutes)."""
+    try:
+        with local_client(port) as client:
+            response = client.post("/api/session/link")
+    except httpx.HTTPError:
+        console.print(
+            f"QuotaMesh is not running on port {port}. Start it with `quotamesh start`.",
+            markup=False,
+        )
+        raise typer.Exit(1) from None
+    if response.status_code != 201:
+        console.print(
+            f"The server on port {port} did not accept this data directory's local key. "
+            "Check --port and QUOTAMESH_DATA_DIR.",
+            markup=False,
+        )
+        raise typer.Exit(1)
+    url = response.json()["url"]
+    if print_url:
+        print(url)
+    elif webbrowser.open(url):
+        console.print("Opened the QuotaMesh dashboard in your browser.")
+    else:
+        console.print("Could not open a browser. Use this one-time link within 2 minutes:")
+        console.print(url, soft_wrap=True, markup=False)
 
 
 @app.command()

@@ -48,7 +48,12 @@ async def test_bootstrap_setup_and_nonstream_passthrough(tmp_path):
         assert bootstrap.status_code == 303 and bootstrap.headers["location"] == "/"
         assert "httponly" in bootstrap.headers["set-cookie"].lower()
         assert "samesite=strict" in bootstrap.headers["set-cookie"].lower()
-        assert (await client.get("/bootstrap?token=used")).status_code == 403
+        # A signed-in browser is redirected without consuming anything; others get a 403 page.
+        assert (await client.get("/bootstrap?token=used")).status_code == 303
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+        ) as signed_out:
+            assert (await signed_out.get("/bootstrap?token=used")).status_code == 403
         saved = await client.post(
             "/api/connection", json=configuration, headers={"Authorization": f"Bearer {key}"}
         )
