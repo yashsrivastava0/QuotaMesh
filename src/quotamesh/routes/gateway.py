@@ -274,7 +274,7 @@ def blocked_response(decisions, code="no_candidates", slug="default", request_id
         {
             **d,
             "explanation": REASONS.get(d["skip_reason"], "Eligible under the saved policy."),
-            "recovery_action": None if d["eligible"] else recovery_action(d),
+            "recovery_action": None if d["eligible"] else recovery_action(d, slug),
         }
         for d in decisions
     ]
