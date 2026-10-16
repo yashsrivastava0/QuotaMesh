@@ -59,7 +59,7 @@ async function refresh(editPolicy = false) {
     };},version));
     tasks.push(panel('.next-steps',async()=>{const data=await api('/api/explain'+query);return ()=>{
       $('#metric-eligible').textContent=data.decisions.filter(d=>d.eligible).length;
-      $('#journey-status').textContent=data.configured ? `qm/${slug} is saved. ${data.selected ? 'Inspect its route or connect your client.' : 'No target is eligible. Inspect the route to see what needs attention.'}` : 'Start with API access. Save an exact model in a profile, then connect your client.';
+      $('#journey-status').textContent=data.configured ? `qm/${slug} is saved. ${data.selected ? 'Inspect its route or connect your client.' : 'No target is eligible. Inspect the route to see what needs attention.'}` : 'Start by adding an API key: Get started walks you through it. Then connect your client.';
     };},version));
   }
   if (page === 'access') tasks.push(panel('#access',async()=>{const data=await statusTask();return ()=>{

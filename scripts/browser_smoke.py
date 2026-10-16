@@ -111,7 +111,7 @@ def onboarding(context):
         page = context.new_page()
         page.goto(f"{origin}/bootstrap?token={app.state.bootstrap_token}")
         ready(page)
-        assert "Start with API access" in page.locator("#journey-status").inner_text()
+        assert "Start by adding an API key" in page.locator("#journey-status").inner_text()
         go(page, origin, "/access")
         form = page.locator("#credential-form")
         form.locator("[name=provider_id]").select_option("custom")

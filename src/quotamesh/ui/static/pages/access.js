@@ -64,7 +64,7 @@ function renderCredentials() {
 $('#cancel-edit').onclick = () => {
   dirty = false;
   $('#credential-form').reset(); $('#credential-form').elements.credential_id.value = '';
-  $('#credential-editor-title').textContent = 'Add API access'; $('#cancel-edit').hidden = true;
+  $('#credential-editor-title').textContent = 'Add an API key'; $('#cancel-edit').hidden = true;
 };
 
 $('#credential-form').onsubmit = async event => {
