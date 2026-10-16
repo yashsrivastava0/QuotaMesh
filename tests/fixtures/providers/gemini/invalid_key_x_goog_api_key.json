@@ -1,0 +1,29 @@
+{
+  "source": "live probe 2026-10-16",
+  "provider": "gemini",
+  "case": "invalid_key_x_goog_api_key",
+  "request": {
+    "path": "/chat/completions",
+    "fields": [
+      "max_completion_tokens",
+      "messages",
+      "model"
+    ],
+    "model": "gemini-2.5-flash-lite",
+    "stream": false
+  },
+  "status": 400,
+  "latency_ms": 384,
+  "headers": {
+    "content-type": "application/json; charset=UTF-8"
+  },
+  "body": [
+    {
+      "error": {
+        "code": 400,
+        "message": "Missing or invalid Authorization header.",
+        "status": "INVALID_ARGUMENT"
+      }
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "source": "live probe 2026-10-16",
+  "provider": "gemini",
+  "case": "json_mode",
+  "request": {
+    "path": "/chat/completions",
+    "fields": [
+      "max_completion_tokens",
+      "messages",
+      "model",
+      "response_format"
+    ],
+    "model": "gemini-3.5-flash-lite",
+    "stream": false
+  },
+  "status": 503,
+  "latency_ms": 3987,
+  "headers": {
+    "content-type": "application/json; charset=UTF-8"
+  },
+  "body": [
+    {
+      "error": {
+        "code": 503,
+        "message": "This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.",
+        "status": "UNAVAILABLE"
+      }
+    }
+  ]
+}

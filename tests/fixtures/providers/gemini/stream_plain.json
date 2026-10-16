@@ -1,0 +1,70 @@
+{
+  "source": "live probe 2026-10-16",
+  "provider": "gemini",
+  "case": "stream_plain",
+  "request": {
+    "path": "/chat/completions",
+    "fields": [
+      "max_tokens",
+      "messages",
+      "model",
+      "stream"
+    ],
+    "model": "gemini-3.5-flash-lite",
+    "stream": true
+  },
+  "status": 200,
+  "latency_ms": 3928,
+  "headers": {
+    "content-type": "text/event-stream"
+  },
+  "framing": "lf",
+  "events": [
+    {
+      "data": {
+        "choices": [
+          {
+            "delta": {
+              "content": "<redacted>",
+              "role": "assistant"
+            },
+            "index": 0
+          }
+        ],
+        "created": 0,
+        "id": "<id>",
+        "model": "gemini-3.5-flash-lite",
+        "object": "chat.completion.chunk"
+      }
+    },
+    {
+      "data": {
+        "choices": [
+          {
+            "delta": {
+              "extra_content": {
+                "google": {
+                  "thought_signature": "<redacted>"
+                }
+              },
+              "role": "assistant"
+            },
+            "finish_reason": "stop",
+            "index": 0
+          }
+        ],
+        "created": 0,
+        "id": "<id>",
+        "model": "gemini-3.5-flash-lite",
+        "object": "chat.completion.chunk"
+      }
+    },
+    "[DONE]"
+  ],
+  "done_marker": true,
+  "usage_event_indexes": [],
+  "usage_event_choices": [],
+  "finish_reasons": [
+    "stop"
+  ]
+}

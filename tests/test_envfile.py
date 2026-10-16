@@ -15,7 +15,7 @@ from quotamesh.envfile import (
 SAMPLE = (
     "﻿# QuotaMesh keys\r\n"
     "OPENAI_API_KEY=sk-proj-abc123\r\n"
-    "export GEMINI_API_KEY = AQ.Ab8RN6-example_value\r\n"
+    "export GEMINI_API_KEY = AQ.fake-gemini-key\r\n"
     "\r\n"
     'GROQ_API_KEY="gsk quoted # not a comment"\r\n'
     "NVIDIA_API_KEY='nvapi-$NOT_EXPANDED'  # trailing comment\r\n"
@@ -34,7 +34,7 @@ def test_common_syntax_bom_crlf_export_quotes_and_comments():
     parsed = parse_env(SAMPLE)
     assert values(parsed) == {
         "OPENAI_API_KEY": "sk-proj-abc123",
-        "GEMINI_API_KEY": "AQ.Ab8RN6-example_value",
+        "GEMINI_API_KEY": "AQ.fake-gemini-key",
         "GROQ_API_KEY": "gsk quoted # not a comment",
         "NVIDIA_API_KEY": "nvapi-$NOT_EXPANDED",
         "MISTRAL_API_KEY": "abc#kept",
@@ -141,7 +141,7 @@ def test_plan_suggestions_default_to_blocked_unknown():
         ("xxxxxxxx", True),
         ("...", True),
         ("sk-proj-real-looking", False),
-        ("AQ.Ab8RN6LZ-real", False),
+        ("AQ.fake-example", False),
         ("AIzaSyExample0123456789", False),
     ],
 )

@@ -1,0 +1,63 @@
+{
+  "source": "live probe 2026-10-16",
+  "provider": "openai",
+  "case": "json_mode",
+  "request": {
+    "path": "/chat/completions",
+    "fields": [
+      "max_completion_tokens",
+      "messages",
+      "model",
+      "response_format"
+    ],
+    "model": "gpt-4.1-nano",
+    "stream": false
+  },
+  "status": 200,
+  "latency_ms": 1240,
+  "headers": {
+    "content-type": "application/json",
+    "x-ratelimit-limit-requests": "5000",
+    "x-ratelimit-limit-tokens": "2000000",
+    "x-ratelimit-remaining-requests": "4999",
+    "x-ratelimit-remaining-tokens": "1999989",
+    "x-ratelimit-reset-requests": "12ms",
+    "x-ratelimit-reset-tokens": "0s"
+  },
+  "body": {
+    "id": "<id>",
+    "object": "chat.completion",
+    "created": 0,
+    "model": "gpt-4.1-nano-2025-04-14",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "<redacted>",
+          "refusal": null,
+          "annotations": []
+        },
+        "logprobs": null,
+        "finish_reason": "stop"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 16,
+      "completion_tokens": 5,
+      "total_tokens": 21,
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "audio_tokens": 0
+      },
+      "completion_tokens_details": {
+        "reasoning_tokens": 0,
+        "audio_tokens": 0,
+        "accepted_prediction_tokens": 0,
+        "rejected_prediction_tokens": 0
+      }
+    },
+    "service_tier": "default",
+    "system_fingerprint": "<fingerprint>"
+  }
+}
