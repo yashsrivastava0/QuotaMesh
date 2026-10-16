@@ -183,7 +183,7 @@ def test_listing_is_tolerant_strips_prefix_and_sorts_chat_models_first():
         }
     ).encode()
     ids, skipped, truncated = listed_models(body, "secret-value", "models/")
-    assert ids == ["gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-embedding-001"]
+    assert ids == ["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-embedding-001"]
     assert (skipped, truncated) == (2, 0)
     with pytest.raises(ValueError):
         listed_models(_json.dumps({"data": [{"id": "bad id"}]}).encode(), "s", "")

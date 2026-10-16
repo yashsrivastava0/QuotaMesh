@@ -31,6 +31,43 @@ NON_CHAT = re.compile(
 )
 
 
+# Well-known chat model families sort first in pickers; previews and experiments after them.
+CHAT_FAMILIES = (
+    "gpt-",
+    "chatgpt-",
+    "o1",
+    "o3",
+    "o4",
+    "gemini-",
+    "gemma-",
+    "claude-",
+    "grok-",
+    "llama",
+    "meta-llama",
+    "mistral",
+    "mixtral",
+    "codestral",
+    "qwen",
+    "deepseek",
+    "kimi",
+    "glm",
+)
+
+
+def model_rank(value):
+    """Picker order: chat-likely, known family, stable, alias before dated snapshot, newest."""
+    name = value.lower().rsplit("/", 1)[-1]
+    version = re.search(r"\d+(?:\.\d+)?", name)
+    return (
+        bool(NON_CHAT.search(value)),
+        not name.startswith(CHAT_FAMILIES),
+        any(tag in name for tag in ("preview", "exp", "latest")),
+        bool(re.search(r"-\d{4}(?:-\d{2}-\d{2})?$", name)),
+        -float(version.group()) if version else 0.0,
+        value,
+    )
+
+
 def listed_models(body, secret, prefix=""):
     """Validate a model listing tolerantly. Returns (ids, skipped, truncated).
 
@@ -59,7 +96,7 @@ def listed_models(body, secret, prefix=""):
         ids.add(identifier)
     if models and not ids:
         raise ValueError("No valid model identifiers")
-    ordered = sorted(ids, key=lambda value: (bool(NON_CHAT.search(value)), value))
+    ordered = sorted(ids, key=model_rank)
     return ordered[:MAX_MODEL_IDS], skipped, max(0, len(ordered) - MAX_MODEL_IDS)
 
 

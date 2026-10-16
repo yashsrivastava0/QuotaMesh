@@ -198,6 +198,8 @@ async def relay_stream(
                 if len(buffer) > MAX_FIRST_EVENT_BYTES:
                     buffer = b""
                 yield chunk
+                if state.done:
+                    break  # complete; do not wait for the upstream to close
                 continue
             if len(buffer) > MAX_FRAMED_BYTES:
                 # No event end within the bound: stop stripping and pass the rest through raw.
@@ -205,8 +207,11 @@ async def relay_stream(
                 buffer, framed = b"", False
             if forward:
                 yield b"".join(forward)
-        if eof and buffer:
-            inspect_event(buffer, state, selected)  # a final event may lack its blank line
+            if state.done:
+                break  # complete; do not wait for the upstream to close
+        if buffer and (eof or state.done):
+            if eof:
+                inspect_event(buffer, state, selected)  # a final event may lack its blank line
             if framed:
                 yield buffer
         # Complete: [DONE], or a finish_reason followed by a clean upstream close (some
@@ -216,7 +221,10 @@ async def relay_stream(
             if not state.error:
                 yield STREAM_ENDED
     except (asyncio.CancelledError, GeneratorExit):
-        result, error_class = "CLIENT_CANCELLED", "cancelled"
+        # SDKs close the connection as soon as they read the end marker; a client that
+        # stops after the complete response did not cancel anything.
+        if not (state.done or state.finished):
+            result, error_class = "CLIENT_CANCELLED", "cancelled"
         raise
     except (httpx.HTTPError, TimeoutError):
         if not state.done:  # after [DONE] the response is already complete
