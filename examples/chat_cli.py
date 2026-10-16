@@ -4,12 +4,11 @@ It streams replies with the OpenAI Python SDK, then prints which provider and mo
 QuotaMesh chose, how many upstream attempts that took, and the token usage.
 
     pip install openai
-    # PowerShell
-    $env:QUOTAMESH_API_KEY = (quotamesh key | Out-String).Trim()
     python examples/chat_cli.py
-    # bash
-    export QUOTAMESH_API_KEY="$(quotamesh key)"
     python examples/chat_cli.py --once "Say hello in five words"
+
+On the machine running QuotaMesh the local gateway key is found automatically; elsewhere set
+QUOTAMESH_API_KEY to the output of `quotamesh key`.
 
 Settings: QUOTAMESH_BASE_URL (default http://127.0.0.1:8787/v1), QUOTAMESH_API_KEY (the
 local gateway key; QUOTAMESH_KEY from the Connect page also works) and QUOTAMESH_MODEL
@@ -26,6 +25,8 @@ import sys
 import urllib.error
 import urllib.request
 
+from local_key import KEY_HELP, local_gateway_key
+
 try:
     import openai
 except ImportError:
@@ -37,12 +38,6 @@ HELP = (
     "Commands: /profile <slug> switches to qm/<slug>, /usage shows today's gateway usage, "
     "/clear forgets the conversation, /quit exits."
 )
-KEY_HELP = """Set the local gateway key first (it is not a provider key):
-  PowerShell: $env:QUOTAMESH_API_KEY = (quotamesh key | Out-String).Trim()
-  bash:       export QUOTAMESH_API_KEY="$(quotamesh key)"
-For `quotamesh demo`, use the `quotamesh key --data-dir ...` command it prints."""
-
-
 def server_message(exc: openai.APIStatusError) -> str:
     """The error text QuotaMesh (or the provider behind it) returned."""
     body = exc.body
@@ -234,10 +229,12 @@ def main() -> int:
     args = parser.parse_args()
     if hasattr(sys.stdout, "reconfigure"):  # model output may not fit a legacy console codepage
         sys.stdout.reconfigure(errors="replace", line_buffering=True)
-    api_key = os.environ.get("QUOTAMESH_API_KEY") or os.environ.get("QUOTAMESH_KEY")
+    api_key, source = local_gateway_key()
     if not api_key:
         print(KEY_HELP, file=sys.stderr)
         return 2
+    if not source.startswith("QUOTAMESH"):
+        print(f"Using the local gateway key saved by QuotaMesh ({source}).", file=sys.stderr)
     model = "qm/" + args.profile if args.profile else os.environ.get("QUOTAMESH_MODEL")
     chat = Chat(args.base_url, api_key, model or "qm/default", args.max_tokens)
     if args.once is not None:

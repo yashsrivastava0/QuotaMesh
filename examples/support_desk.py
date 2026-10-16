@@ -25,6 +25,8 @@ import os
 import sys
 import time
 
+from local_key import KEY_HELP, local_gateway_key
+
 try:
     import openai
 except ImportError:
@@ -206,10 +208,12 @@ def main() -> int:
     args = parser.parse_args()
     if hasattr(sys.stdout, "reconfigure"):  # keep piped output in order with stderr
         sys.stdout.reconfigure(errors="replace", line_buffering=True)
-    api_key = os.environ.get("QUOTAMESH_API_KEY") or os.environ.get("QUOTAMESH_KEY")
+    api_key, source = local_gateway_key()
     if not api_key:
-        print("Set QUOTAMESH_API_KEY to the output of `quotamesh key` first.", file=sys.stderr)
+        print(KEY_HELP, file=sys.stderr)
         return 2
+    if not source.startswith("QUOTAMESH"):
+        print(f"Using the local gateway key saved by QuotaMesh ({source}).", file=sys.stderr)
     model = "qm/" + args.profile if args.profile else os.environ.get("QUOTAMESH_MODEL")
     model = model or "qm/default"
     client = openai.OpenAI(base_url=args.base_url, api_key=api_key, max_retries=0, timeout=180)

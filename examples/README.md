@@ -19,7 +19,7 @@ pip install openai            # or, from a checkout: pip install -e ".[examples]
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `QUOTAMESH_BASE_URL` | `http://127.0.0.1:8787/v1` | The gateway (the demo uses port 8788) |
-| `QUOTAMESH_API_KEY` | none | The **local gateway key** printed by `quotamesh key`; `QUOTAMESH_KEY` (set by the Connect page) also works. It is not a provider key. |
+| `QUOTAMESH_API_KEY` | the key saved in QuotaMesh's data directory | The **local gateway key** printed by `quotamesh key`; `QUOTAMESH_KEY` (set by the Connect page) also works. It is not a provider key. |
 | `QUOTAMESH_MODEL` | `qm/default` | The profile alias; `--profile <slug>` overrides it |
 
 `--max-tokens` caps each reply and is sent as `max_completion_tokens`, which OpenAI and
@@ -68,18 +68,22 @@ What to expect from the demo's starting scenario:
 ## Run them against your own keys
 
 Start QuotaMesh, add your keys (paste a `.env` or add a key in the dashboard), and save a
-default profile, as described in the [README](../README.md#quick-start). Then:
+default profile, as described in the [README](../README.md#quick-start). With QuotaMesh
+running, from the repository folder:
 
 ```powershell
-$env:QUOTAMESH_API_KEY = (quotamesh key | Out-String).Trim()
-python examples/chat_cli.py
-python examples/support_desk.py --max-tokens 300
+.venv\Scripts\python.exe examples\chat_cli.py
+.venv\Scripts\python.exe examples\chat_cli.py --profile with-backup --once "Say hello in five words"
+.venv\Scripts\python.exe examples\support_desk.py --max-tokens 300
 ```
 
 ```sh
-export QUOTAMESH_API_KEY="$(quotamesh key)"
-python examples/chat_cli.py --profile my-app
+.venv/bin/python examples/chat_cli.py --profile my-app
 ```
+
+On the machine where QuotaMesh runs, the examples find the local gateway key by themselves
+(the file `quotamesh key` prints, in QuotaMesh's data directory). Set `QUOTAMESH_API_KEY`
+only when the examples run elsewhere or should use another data directory.
 
 Each chat turn is one routed request; the support desk makes three (two tool turns and one
 triage) when the model calls the tool once. Paid providers are used only when the profile
