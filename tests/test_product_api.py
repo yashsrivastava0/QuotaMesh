@@ -3,6 +3,7 @@
 from datetime import UTC, datetime, timedelta
 
 import httpx
+import pytest
 from test_phase_two import call, setup
 
 from quotamesh.store import Store
@@ -144,3 +145,45 @@ async def test_wallet_daily_is_fourteen_zero_filled_days_oldest_first(tmp_path):
     quiet = daily[0]
     assert quiet["attempts"] == 0 and quiet["by_provider"] == {} and quiet["known_cost_usd"] == 0
     assert sum(entry["attempts"] for entry in daily) == 4  # The 20-day-old row is outside.
+
+
+@pytest.mark.parametrize(
+    ("code", "decision", "enabled", "expected"),
+    [
+        ("add_access", {"provider_id": "gemini"}, True, "/access?profile=app&provider=gemini"),
+        ("rotate_access", {"credential_id": 3}, True, "/access?profile=app&credential=3"),
+        ("wait", {"credential_id": 3}, True, "/help/doctor?profile=app&credential=3"),
+        ("review_enabled", {"credential_id": 3}, True, "/access?profile=app&credential=3"),
+        ("review_enabled", {"credential_id": 3}, False, "/profiles?profile=app"),
+        ("review_cap", {}, True, "/route?profile=app#spend"),
+        ("repair_accounting", {}, True, "/route?profile=app#accounting"),
+        ("inspect", {}, True, "/route?profile=app"),
+    ],
+)
+def test_recovery_hrefs_point_at_the_page_that_fixes_it(code, decision, enabled, expected):
+    from quotamesh.connect import recovery_href
+
+    assert recovery_href(code, decision, "app", enabled) == expected
+
+
+def test_listing_is_tolerant_strips_prefix_and_sorts_chat_models_first():
+    import json as _json
+
+    from quotamesh.doctor import listed_models
+
+    body = _json.dumps(
+        {
+            "data": [
+                {"id": "models/gemini-embedding-001"},
+                {"id": "models/gemini-3.5-flash-lite"},
+                {"id": "bad id with spaces"},
+                {"id": None},
+                {"id": "models/gemini-3.8-flash"},
+            ]
+        }
+    ).encode()
+    ids, skipped, truncated = listed_models(body, "secret-value", "models/")
+    assert ids == ["gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-embedding-001"]
+    assert (skipped, truncated) == (2, 0)
+    with pytest.raises(ValueError):
+        listed_models(_json.dumps({"data": [{"id": "bad id"}]}).encode(), "s", "")
