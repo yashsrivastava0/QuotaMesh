@@ -9,6 +9,8 @@ import httpx
 import pytest
 from test_phase_two import FIRST, Events, call, setup
 
+from quotamesh.app import create_app
+
 FIXTURES = Path(__file__).parent / "fixtures" / "providers"
 SSE = {"content-type": "text/event-stream"}
 
@@ -295,3 +297,10 @@ async def test_idle_timeout_bounds_each_read_after_commit(tmp_path, monkeypatch,
     assert (done in response.content) is not stalled
     assert attempts(app)[-1]["outcome"] == ("MID_STREAM_FAILURE" if stalled else "OK")
     assert stream.closed
+
+
+async def test_reads_are_bounded_by_profile_deadlines_not_httpx(tmp_path):
+    app = create_app(tmp_path)
+    timeout = app.state.client.timeout
+    await app.state.client.aclose()
+    assert (timeout.connect, timeout.read, timeout.write, timeout.pool) == (5, None, 10, 5)
