@@ -84,8 +84,10 @@ $('#credential-form').onsubmit = async event => {
       notice('Access saved. Checking model listing…');
       const result = await api('/api/doctor', {credential_id:Number(identifier || saved.credential_id), mode:'models'});
       diagnosticData = [result];
-      notice('Access saved. '+checkText(result)); await refresh();
-      
+      // A failed listing is an error, explained in plain words, even though the key was saved.
+      const listed = result.outcome === 'listing_ok';
+      notice(listed ? `Access saved. Found ${result.models.length} model(s). ${checkText(result)}` : `Access saved, but the listing check failed. ${checkOutcomeText(result.outcome)} (${checkText(result)})`, !listed);
+      await refresh();
     }
   } catch (error) { pendingNavigation=null;notice(error.message, true); }
   finally { delete form.dataset.busy; for (const button of form.querySelectorAll('button')) button.disabled = false; }

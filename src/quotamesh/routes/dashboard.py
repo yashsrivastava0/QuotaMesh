@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import secrets
 from datetime import UTC, datetime
@@ -60,9 +61,16 @@ PAGES = {
 }
 
 
+@functools.lru_cache(maxsize=64)
+def _asset_digest(name: str, mtime_ns: int, size: int) -> str:
+    # Keyed by modification time and size, so an edited asset gets a new digest
+    # without hashing every bundled file on every page render.
+    return hashlib.sha256((UI / "static" / name).read_bytes()).hexdigest()[:12]
+
+
 def asset_url(name: str) -> str:
-    digest = hashlib.sha256((UI / "static" / name).read_bytes()).hexdigest()[:12]
-    return f"/static/{name}?v={digest}"
+    info = (UI / "static" / name).stat()
+    return f"/static/{name}?v={_asset_digest(name, info.st_mtime_ns, info.st_size)}"
 
 
 def _dashboard_context(request: Request, *, error: str | None = None) -> dict[str, Any]:

@@ -29,7 +29,7 @@ function renderWallet(wallet) {
         card.append(tagged('Estimated remaining USD', dollars(source.estimated_remaining_usd), source.sources.estimated_remaining_usd));
       }
       evidence.append(tagged('Remaining provider quota', 'Unknown', 'UNKNOWN'));
-      for (const rate of source.rate_observations || []) evidence.append(tagged(`${rate.model} / ${rate.dimension} (${rate.window})`, `${rate.remaining} reported at ${rate.observed_at}${rate.stale ? ' ? stale' : ' ? recent snapshot'}; other traffic may have consumed it`, 'PROVIDER'));
+      for (const rate of source.rate_observations || []) evidence.append(tagged(`${rate.model} / ${rate.dimension} (${rate.window})`, `${rate.remaining} reported at ${rate.observed_at}${rate.stale ? ' · stale' : ' · recent snapshot'}; other traffic may have consumed it`, 'PROVIDER'));
       card.append(evidence);
       for (const key of source.keys) {
         const observed = key.usage.last_success_at ? 'success observed' : 'untested';

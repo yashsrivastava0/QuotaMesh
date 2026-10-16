@@ -7,6 +7,7 @@ import socket
 import threading
 import time
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -105,6 +106,77 @@ def onboarding(context):
         assert origin + "/v1" in page.locator("#integration-code").inner_text()
         go(page, origin, "/activity")
         assert page.locator(".request-trace").count() == 1
+        # The page's own live-update line must leave "Connecting…" (no duplicate ids).
+        expect(page.locator("#activity-feed-status")).to_have_text("Local updates connected.")
+        assert page.locator("#activity-status").count() == 1
+        # A failed listing check is reported as an error with a plain explanation.
+        go(page, origin, "/access")
+        page.locator("#credential-form").evaluate("form => form.closest('details').open = true")
+        form.locator("[name=provider_id]").select_option("custom")
+        form.locator("[name=plan_type]").select_option("FREE")
+        form.locator("[name=secret_value]").fill("fake-401:rejected")
+        form.locator("[name=base_url]").fill(origin + "/fake/v1")
+        page.locator("#save-check").click()
+        expect(page.locator("#notice")).to_contain_text("listing check failed")
+        assert "success" not in (page.locator("#notice").get_attribute("class") or "")
+        assert "rejected this API key" in page.locator("#notice").inner_text()
+        page.close()
+
+
+def fresh_defaults(context):
+    """Fresh-install defaults, profile picker names, and draft navigation regressions."""
+    with local_server(False) as (app, origin):
+        page = context.new_page()
+        page.goto(f"{origin}/bootstrap?token={app.state.bootstrap_token}")
+        ready(page)
+        go(page, origin, "/connect")
+        expect(page.locator("#integration-notice")).to_contain_text(
+            "Save your default profile first"
+        )
+        assert "disabled" not in page.locator("#integration-notice").inner_text()
+        go(page, origin, "/profiles")
+        assert page.locator("[name=allow_trial]").is_checked(), "Trials default to allowed"
+        assert page.locator("[name=nonstream_deadline_s]").input_value() == "90"
+        assert page.locator("[name=first_event_timeout_s]").input_value() == "45"
+        # Save a key without contacting the provider; new targets default to its provider.
+        saved = page.request.post(
+            f"{origin}/api/credentials",
+            data={"provider_id": "groq", "plan_type": "FREE", "secret_value": "fake-untested"},
+        )
+        assert saved.status == 201, saved.text()
+        go(page, origin, "/profiles")
+        assert page.locator("[data-field=provider_id]").first.input_value() == "groq"
+        page.locator("[data-field=model]").first.fill("llama-test")
+        page.locator("#policy-form button[type=submit]").click()
+        expect(page.locator("#notice")).to_contain_text("Profile saved")
+        # Create, then rename: the picker always shows the saved name.
+        page.locator("#new-profile").click()
+        assert page.locator("[data-field=provider_id]").first.input_value() == "groq"
+        page.locator("#profile-name").fill("Picker app")
+        page.locator("#profile-slug").fill("picker-app")
+        page.locator("[data-field=model]").first.fill("llama-test")
+        page.locator("#policy-form button[type=submit]").click()
+        page.wait_for_url("**/profiles?profile=picker-app")
+        expect(page.locator("#profile-select option:checked")).to_have_text(
+            "Picker app · qm/picker-app"
+        )
+        page.locator("#profile-name").fill("Picker renamed")
+        page.locator("#policy-form button[type=submit]").click()
+        expect(page.locator("#profile-select option:checked")).to_have_text(
+            "Picker renamed · qm/picker-app"
+        )
+        # Escape on the leave dialog cancels navigation; a later save must not navigate.
+        page.locator("#profile-name").fill("Picker escaped")
+        page.locator("nav").get_by_role("link", name="Connect", exact=True).click()
+        expect(page.locator("#leave-dialog")).to_be_visible()
+        page.keyboard.press("Escape")
+        expect(page.locator("#leave-dialog")).to_be_hidden()
+        page.locator("#policy-form button[type=submit]").click()
+        expect(page.locator("#profile-select option:checked")).to_have_text(
+            "Picker escaped · qm/picker-app"
+        )
+        page.wait_for_timeout(300)
+        assert "/profiles" in page.url, page.url
         page.close()
 
 
@@ -137,6 +209,8 @@ def journeys(page, app, origin, screenshots, metrics):
         assert len(requests) <= 2, (path, requests)
         assert page.locator("nav a[aria-current=page]").count() == 1
         assert not page.locator(".panel-state.failed").count(), path
+        # Status boxes never become grid items that shift a two-column layout.
+        assert not page.locator(".grid > .panel-state, .catalog-grid > .panel-state").count()
         for width in (1440, 768, 390):
             page.set_viewport_size({"width": width, "height": 900})
             assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), (
@@ -224,6 +298,19 @@ def journeys(page, app, origin, screenshots, metrics):
         "document.querySelector('#doctor-status').textContent.includes('listing ok') && !document.querySelector('#doctor-form button[type=submit]').disabled"
     )
     assert len(app.state.store.recent_attempts()) == count
+    # "Use model in profile form" survives boot-time URL updates and adds a draft target.
+    targets = len(app.state.store.safe_routing(datetime.now(UTC))["targets"])
+    page.locator("#doctor-results").get_by_role("button", name="Use model in profile form").first.click()
+    page.wait_for_url("**/profiles?profile=default*")
+    ready(page)
+    expect(page.locator("#notice")).to_contain_text("Model added to the draft")
+    assert page.locator("#targets .target-row").count() == targets + 1
+    assert page.locator("[data-field=model]").last.input_value() == "demo-billable"
+    assert "model=" not in page.url, "Applied hints are removed from the address"
+    page.locator(".brand").click()
+    page.locator("#leave-discard").click()
+    page.wait_for_url("**/?profile=default")
+    go(page, origin, "/help/doctor")
     page.locator("#doctor-mode").select_option("generation")
     page.locator("#doctor-credential").select_option("3")
     page.locator("#doctor-consent").check()
@@ -248,7 +335,18 @@ def journeys(page, app, origin, screenshots, metrics):
         ("accounting", 429, 2),
     ]:
         load(page, origin, scenario)
+        if scenario == "expired":
+            # Recovery links lead to the page that fixes the block.
+            link = page.locator("#decisions .blocked a.text-link").first
+            assert "/access?profile=default&credential=1" in link.get_attribute("href")
         summary = send(page)
+        if scenario == "fallback":
+            page.locator("#refresh").click()
+            ready(page)
+            wait = page.locator("#decisions .blocked a.text-link").first
+            assert wait.get_attribute("href").startswith("/route?profile=default"), (
+                wait.get_attribute("href")
+            )
         assert f"HTTP {status}" in summary and f"{attempts} upstream attempt" in summary, (
             scenario,
             summary,
@@ -299,10 +397,12 @@ def journeys(page, app, origin, screenshots, metrics):
         ),
     )
     go(page, origin, "/")
-    assert "Synthetic wallet outage" in page.locator("#wallet .panel-state.failed").inner_text()
+    wallet_state = page.locator('.panel-state[data-for="#wallet"]')
+    assert "Synthetic wallet outage" in wallet_state.inner_text()
+    assert "failed" in wallet_state.get_attribute("class")
     assert "qm/default is saved" in page.locator("#journey-status").inner_text()
     page.unroute("**/api/wallet")
-    page.locator("#wallet").get_by_role("button", name="Retry").click()
+    wallet_state.get_by_role("button", name="Retry").click()
     page.wait_for_function("document.querySelector('#wallet').dataset.stale === 'false'")
     assert not page.locator(".panel-state.failed:visible").count()
     go(page, origin, "/route")
@@ -314,7 +414,10 @@ def journeys(page, app, origin, screenshots, metrics):
     )
     page.locator("#refresh").click()
     page.wait_for_function("document.querySelector('#decisions').dataset.stale === 'true'")
-    assert "Local request failed" in page.locator("#decisions .panel-state.failed").inner_text()
+    assert (
+        "Local request failed"
+        in page.locator('.panel-state.failed[data-for="#decisions"]').inner_text()
+    )
     assert "requests and" in page.locator("#spend-note").inner_text()
     page.unroute("**/api/explain*")
 
@@ -334,6 +437,8 @@ def journeys(page, app, origin, screenshots, metrics):
     page.reload()
     ready(page)
     assert "session expired" in page.locator(".panel-state.failed").inner_text()
+    # Nothing loaded, so there is nothing to copy: placeholder text is never copied.
+    expect(page.locator("#copy-integration")).to_be_disabled()
     page.unroute("**/api/integrations*")
 
 
@@ -364,6 +469,10 @@ def main():
             onboarding(context)
             report["checks"].append(
                 "first-run setup, listing without generation, connection, and history"
+            )
+            fresh_defaults(context)
+            report["checks"].append(
+                "fresh-install defaults, picker names after create/rename, Escape on leave dialog"
             )
             with local_server(True) as (app, origin):
                 page = context.new_page()

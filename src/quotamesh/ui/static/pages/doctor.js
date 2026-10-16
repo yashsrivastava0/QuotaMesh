@@ -10,10 +10,18 @@ function doctorTargets() {
   $('#doctor-form button[type=submit]').disabled = !!doctorController || !credential || (generation && !$('#doctor-target').options.length);
 }
 
+let doctorHintApplied = false;
+
 function renderDoctor() {
   const selected = $('#doctor-credential').value; $('#doctor-credential').replaceChildren();
   for (const credential of state.credentials) { const option = node('option', credential.label+' · '+credential.provider_id); option.value = credential.id; $('#doctor-credential').append(option); }
   if ([...$('#doctor-credential').options].some(o => o.value === selected)) $('#doctor-credential').value = selected;
+  // Recovery links can name the key to diagnose (?credential=<id>); apply it once.
+  if (!doctorHintApplied) {
+    const hinted = bootParams.get('credential');
+    if (hinted && [...$('#doctor-credential').options].some(o => o.value === hinted)) $('#doctor-credential').value = hinted;
+    doctorHintApplied = true; dropParams('credential');
+  }
   doctorTargets(); $('#doctor-results').replaceChildren();
   if (!diagnosticData.length) $('#doctor-results').append(node('p','No checks recorded. Saved access remains untested until you run a check or route traffic.','fine'));
   for (const check of diagnosticData) {

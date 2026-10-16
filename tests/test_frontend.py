@@ -37,6 +37,24 @@ async def test_task_pages_are_authenticated_local_and_versioned(tmp_path):
         assert (await client.get("/profiles?profile=missing")).status_code == 404
 
 
+def test_asset_digest_is_computed_once_per_file_version(tmp_path, monkeypatch):
+    from quotamesh.routes import dashboard
+
+    static = tmp_path / "static"
+    static.mkdir()
+    asset = static / "probe.js"
+    asset.write_text("'use strict';", encoding="utf-8")
+    monkeypatch.setattr(dashboard, "UI", tmp_path)
+    dashboard._asset_digest.cache_clear()
+    first = dashboard.asset_url("probe.js")
+    assert re.fullmatch(r"/static/probe\.js\?v=[a-f0-9]{12}", first)
+    assert dashboard.asset_url("probe.js") == first
+    assert dashboard._asset_digest.cache_info().hits == 1
+    asset.write_text("'use strict'; // changed", encoding="utf-8")
+    assert dashboard.asset_url("probe.js") != first
+    dashboard._asset_digest.cache_clear()
+
+
 async def test_configuration_field_errors_do_not_echo_inputs(tmp_path):
     app = create_app(tmp_path, allow_test_host=True)
     auth = {"Authorization": "Bearer " + app.state.local_key}

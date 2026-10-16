@@ -2,6 +2,10 @@
 
 const $ = (selector) => document.querySelector(selector);
 
+// Captured once, before any history.replaceState, so one-shot hints such as
+// ?model=…&credential=… are still readable when asynchronous panels apply them.
+const bootParams = new URLSearchParams(location.search);
+
 let state = JSON.parse($('#initial-state').textContent);
 
 const providers = JSON.parse($('#provider-options').textContent);
@@ -82,13 +86,19 @@ async function api(path, body, method = 'POST') {
     throw new Error('Cannot reach the local gateway. Check that QuotaMesh is running, then retry.');
   }
   let result;
-  try { result = await response.json(); } catch { throw new Error(`Local request failed (HTTP ${response.status}). Refresh or reopen the startup link.`); }
+  try { result = await response.json(); } catch { throw requestError(`Local request failed (HTTP ${response.status}). Refresh or reopen the startup link.`, response.status); }
   if (!response.ok) {
-    if (response.status === 401) throw new Error('Your dashboard session expired. Reopen the startup link printed by QuotaMesh.');
+    if (response.status === 401) throw requestError('Your dashboard session expired. Reopen the startup link printed by QuotaMesh.', 401, 'unauthorized');
     showFieldErrors(result.error?.fields || []);
-    throw new Error(result.error?.message || 'Request failed');
+    throw requestError(result.error?.message || 'Request failed', response.status, result.error?.code);
   }
   return result;
+}
+
+// Errors keep the HTTP status so callers can degrade gracefully (for example a 404
+// from an endpoint that this gateway version does not provide yet).
+function requestError(message, status, code) {
+  const error = new Error(message); error.status = status; error.code = code; return error;
 }
 
 function numberOrNull(value) { return value === '' ? null : Number(value); }
@@ -118,17 +128,85 @@ function checkText(check) {
   return `${check.mode === 'models' ? 'Listing' : 'Generation'}: ${check.outcome.replaceAll('_',' ')} · ${check.http_status == null ? 'no upstream response' : 'HTTP '+check.http_status} · ${check.latency_ms ?? 'unknown'} ms · ${check.checked_at}${check.stale ? ' · stale (over 24 hours)' : ''}`;
 }
 
+const checkOutcomes = {
+  listing_ok: 'The provider listed its models. Generation access and remaining quota are not verified yet.',
+  listing_unsupported: 'This provider does not offer a model list. Type the exact model ID from its documentation.',
+  auth: 'The provider rejected this API key. Check that you copied the whole key and chose the matching provider.',
+  invalid: 'The provider rejected this API key. Check that you copied the whole key and chose the matching provider.',
+  funds_or_account: 'The provider reported a billing, account, or region problem for this API key.',
+  rate_limit: 'The provider rate-limited this check. Wait a moment, then try again.',
+  daily_quota: 'The provider reported that the daily quota is used up. Try again after it resets.',
+  timeout: 'The provider did not answer within 10 seconds. Try again.',
+  network_error: 'QuotaMesh could not reach the provider. Check your connection or the base URL.',
+  redirect_blocked: 'The endpoint answered with a redirect, which QuotaMesh never follows. Check the base URL.',
+  protocol_error: 'The provider answered in an unexpected format. Check the base URL and provider.',
+  missing_secret: 'The environment variable for this API key is not set in the running QuotaMesh process.',
+  disabled: 'This API key is disabled. Enable it on the API keys page first.',
+  expired: 'The expiry date of this API key has passed.',
+  storage_error: 'QuotaMesh could not save the check result locally.',
+  model_access: 'The provider refused access to this model or endpoint.',
+  provider_failure: 'The provider reported a temporary failure. Try again shortly.',
+  request_error: 'The provider rejected the request.',
+  generation_failed: 'The test request failed.',
+  ok: 'The test request succeeded.',
+};
+
+// Plain-language explanation for Doctor/listing outcomes; unknown codes stay visible.
+function checkOutcomeText(outcome) {
+  return checkOutcomes[outcome] || reasons[outcome] || 'Result: '+String(outcome || 'unknown').replaceAll('_',' ')+'.';
+}
+
 function profileUrl(path, slug = currentSlug) { return path+'?profile='+encodeURIComponent(slug); }
+
+// Same-origin path with ?profile set; other parameters and the hash are preserved.
+function linkTo(href, {keepProfile = false} = {}) {
+  const url = new URL(href, location.origin);
+  if (url.origin !== location.origin) return profileUrl('/');
+  if (!keepProfile || !url.searchParams.has('profile')) url.searchParams.set('profile', currentSlug);
+  return url.pathname+url.search+url.hash;
+}
+
 function updateProfileUrl() {
-  history.replaceState(null,'',profileUrl(location.pathname));
-  for (const link of document.querySelectorAll('[data-profile-link]')) link.href = profileUrl(new URL(link.href).pathname);
-  if (!creatingProfile && state.profile) {
-    const select = $('#profile-select');
-    if (![...select.options].some(o => o.value === currentSlug)) {
-      const option = node('option',state.profile.name+' · qm/'+currentSlug); option.value = currentSlug; select.append(option);
-    }
-    select.value = currentSlug;
+  history.replaceState(history.state,'',linkTo(location.href));
+  for (const link of document.querySelectorAll('[data-profile-link]')) link.href = linkTo(link.href);
+}
+
+// Remove one-shot hints after they were applied, so a reload does not apply them twice.
+function dropParams(...names) {
+  const url = new URL(location.href);
+  for (const name of names) url.searchParams.delete(name);
+  history.replaceState(history.state,'',url.pathname+url.search+url.hash);
+}
+
+// Keep the picker label in step with the saved profile after create or rename.
+function syncProfilePicker() {
+  const picker = $('#profile-select');
+  if (!picker || creatingProfile) return;
+  if (state.profile && state.profile.slug === currentSlug) {
+    let option = [...picker.options].find(o => o.value === currentSlug);
+    if (!option) { option = node('option'); option.value = currentSlug; picker.append(option); }
+    option.textContent = state.profile.name+' · qm/'+currentSlug;
   }
+  picker.value = currentSlug;
+}
+
+// Link to the page that fixes a blocked target. Prefer the server-provided relative href.
+function recoveryHref(action, decision = {}) {
+  if (typeof action?.href === 'string' && /^\/(?![/\\])/.test(action.href)) return linkTo(action.href, {keepProfile: true});
+  const credential = action?.credential_id ?? decision.credential_id;
+  const withKey = path => profileUrl(path)+(credential ? '&credential='+encodeURIComponent(credential) : '');
+  switch (action?.code) {
+    case 'add_access': case 'rotate_access': case 'review_expiry': case 'review_environment': case 'review_enabled': return withKey('/access');
+    case 'diagnose_access': return withKey('/help/doctor');
+    case 'wait': return profileUrl('/route');
+    case 'review_cost': case 'repair_accounting': return profileUrl('/route')+'#spend';
+    default: return profileUrl('/profiles');
+  }
+}
+
+function recoveryLabel(action, decision = {}) {
+  const until = decision.recovery_at && action?.code === 'wait' ? ' (after '+new Date(decision.recovery_at).toLocaleTimeString()+')' : '';
+  return (action?.label || 'Review saved rules')+until+' →';
 }
 function showFieldErrors(fields) {
   document.querySelectorAll('.field-error').forEach(e => e.remove());

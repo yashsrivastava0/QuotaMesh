@@ -10,11 +10,7 @@ function renderDecisions(decisions) {
     text.append(node('small', decision.eligible ? `Allowed by saved rules · ${planName(decision.plan_type)} · provider quota not checked` : decision.explanation || reasons[decision.skip_reason] || decision.skip_reason));
     if (decision.recovery_at) text.append(node('small', 'Recovery (UTC): '+decision.recovery_at));
     if (decision.recovery_action) {
-      const action=decision.recovery_action;
-      const access=['add_access','rotate_access','review_expiry','review_environment'];
-      const destination=access.includes(action.code) ? '/access' : ['wait','diagnose_access'].includes(action.code) ? '/help/doctor' : action.code === 'repair_accounting' ? '/help' : '/profiles';
-      const link=node('a',action.label+' →','text-link');link.href=profileUrl(destination);
-      if(destination==='/access' && action.credential_id)link.href+='&credential='+action.credential_id;
+      const link=node('a',recoveryLabel(decision.recovery_action,decision),'text-link');link.href=recoveryHref(decision.recovery_action,decision);
       text.append(link);
     }
     row.append(text); $('#decisions').append(row);
