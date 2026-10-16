@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import sqlite3
 import threading
 import time
@@ -22,6 +23,8 @@ from rich.table import Table
 from quotamesh import __version__
 from quotamesh.app import create_app
 from quotamesh.config import data_directory
+from quotamesh.envfile import EnvFileError, is_placeholder, parse_env, provider_for
+from quotamesh.lifecycle import process_lock
 from quotamesh.security import mint_bootstrap_token
 from quotamesh.store import Store
 from quotamesh.wallet import snapshot
@@ -101,9 +104,73 @@ def local_api(path, *, port=8787, body=None, method="GET"):
         raise typer.Exit(1) from None
 
 
+def port_available(port: int) -> bool:
+    """True when 127.0.0.1:port can be bound right now."""
+    with socket.socket() as probe:
+        try:
+            probe.bind(("127.0.0.1", port))
+        except OSError:
+            return False
+    return True
+
+
+def load_env_file(path: Path) -> None:
+    """Expose provider key variables from a .env file to this server process.
+
+    Only recognised provider names are loaded, existing variables win, and values are
+    never printed.
+    """
+    try:
+        parsed = parse_env(path.read_bytes())
+    except (OSError, EnvFileError) as exc:
+        message = exc.strerror if isinstance(exc, OSError) else str(exc)
+        console.print(f"Cannot read {path}: {message}", markup=False)
+        raise typer.Exit(1) from None
+    loaded = []
+    for name, entry in parsed.entries.items():
+        value = entry.value.reveal()
+        if provider_for(name) and not is_placeholder(value) and name not in os.environ:
+            os.environ[name] = value
+            loaded.append(name)
+    console.print(
+        "Loaded from " + str(path) + ": " + (", ".join(loaded) or "no new provider keys"),
+        markup=False,
+    )
+
+
 @app.command()
-def start(port: int = typer.Option(8787, min=1, max=65535), browser: bool = True) -> None:
+def start(
+    port: int = typer.Option(8787, min=1, max=65535),
+    browser: bool = True,
+    env_file: Annotated[
+        Path | None,
+        typer.Option(
+            "--env-file",
+            help="Load provider key variables from this .env file for environment references",
+        ),
+    ] = None,
+) -> None:
     """Start the local dashboard and Chat Completions gateway."""
+    if env_file is not None:
+        load_env_file(env_file)
+    if not port_available(port):
+        hint = "quotamesh open" if port == 8787 else f"quotamesh open --port {port}"
+        console.print(
+            f"Port {port} is busy. If QuotaMesh is already running, use `{hint}`; "
+            "otherwise choose another --port.",
+            markup=False,
+        )
+        raise typer.Exit(1)
+    try:
+        with process_lock(data_directory()):
+            pass
+    except (RuntimeError, OSError):
+        console.print(
+            "QuotaMesh is already running with this data directory. "
+            "Run `quotamesh open` to get a fresh dashboard link.",
+            markup=False,
+        )
+        raise typer.Exit(1) from None
     try:
         server = create_app()
     except (OSError, sqlite3.Error, RuntimeError):

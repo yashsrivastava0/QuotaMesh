@@ -84,7 +84,23 @@ The first valid SSE response event (including role-only) is the commitment point
 are retained but do not commit; error/malformed-first events can fall back. After commitment,
 raw bytes remain on that provider, interruption is an SSE error, and cancellation closes the
 upstream. Usage inspection is bounded to small events and only stores token/cost metadata.
-No unsupported stream-usage field is injected. Missing `[DONE]` is a failure.
+For providers whose registry row sets `stream_usage = "inject"` (OpenAI and Gemini, verified
+live; see [live-provider-notes.md](live-provider-notes.md)), QuotaMesh adds
+`stream_options.include_usage` when the client did not ask, so streamed spend is known. It then
+forwards complete events and drops only an OpenAI-style usage-only chunk (`"choices": []`) the
+client did not request (`X-QuotaMesh-Usage-Injected: true`); without injection bytes pass through
+unchanged, and usage carried on content chunks (Gemini) is never altered. A stream is complete at
+`[DONE]`, or at a clean upstream close after a `finish_reason`; the relay stops reading at
+`[DONE]`, so a client that disconnects after the end is not counted as cancelled. A committed
+stream fails after `max(60 s, first-event timeout)` without upstream bytes.
+
+Profile deadlines are the time budget: httpx has no read timeout of its own. A route deadline that
+expires is reported as `deadline` (504 with the last attempt's outcome) without degrading the
+target, while transport timeouts and connection errors degrade the provider/model briefly. New
+profiles default to 90 s non-stream and 45 s to the first stream event (live Gemini replies took
+15–28 s non-stream). Classification reads root-array and object error bodies, structured codes,
+Google `details[]` reasons, quota ids and `retryDelay` before any wording, and treats billing
+wording as account trouble only when no quota evidence exists.
 
 Caps check observed local spend before selection. In-flight final cost can overshoot; no
 provider-side billing guarantee is claimed. With a cap, unknown price/spend blocks paid
@@ -133,8 +149,25 @@ request body, and metadata-only privacy boundaries remain from phase one. SQLite
 are plaintext with best-effort filesystem restrictions; environment references avoid storing
 raw provider keys in SQLite. No background probes, telemetry, or body logging.
 
-Only Chat Completions is supported. Custom/preset API behavior is synthetic-fixture tested;
-live account/model verification requires the user's authorized keys. See the
+Login: the printed one-time link stays valid until used; the browser opened by `quotamesh start`
+gets its own token, and `quotamesh open` asks the running server (bearer key only) for a fresh
+single-use link valid for 120 s. Session cookies are named per port (`qm_session_<port>`), so the
+demo and a real instance do not overwrite each other, and all token comparisons use
+`hmac.compare_digest` on bytes. The Connect page can copy the local gateway key through
+`POST /api/local-key/reveal`, which accepts only the dashboard session, is Origin-guarded and
+`no-store`; the key is copied, not rendered, so pages never contain it. `.env` import parses files
+with `quotamesh.envfile` (no interpolation, values wrapped so they never print); the server parses
+uploaded text statelessly and never accepts file paths.
+
+Storage: each thread reuses one SQLite connection (re-entrant transactions use savepoints),
+WAL with `synchronous=NORMAL` (an application crash loses nothing; an OS crash or power loss can
+lose the last commits), and history pruning runs every 500 inserts instead of on every write.
+On the in-process benchmark this raised throughput from 26.5 to about 157 non-stream and
+203 streaming requests per second at concurrency 20.
+
+Only Chat Completions is supported. OpenAI and Gemini behaviour is verified live (sanitized
+fixtures in `tests/fixtures/providers/`, opt-in suite in `tests/live/`); other presets remain
+synthetic-fixture tested until someone runs the probe with their keys. See the
 [phase-four implementation](phase-four-plan.md) for verification and assumptions, and the
 [roadmap](../ROADMAP.md) for phase boundaries.
 

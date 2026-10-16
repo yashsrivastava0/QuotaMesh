@@ -183,3 +183,26 @@ def test_cli_open_explains_a_stopped_server(tmp_path, monkeypatch):
     result = CliRunner().invoke(cli, ["open", "--port", str(port)])
     assert result.exit_code == 1
     assert f"QuotaMesh is not running on port {port}" in result.stdout
+
+
+async def test_local_key_reveal_requires_the_dashboard_session(app):
+    bearer = {"Authorization": "Bearer " + app.state.local_key}
+    async with client_for(app) as client:
+        assert (await client.post("/api/local-key/reveal")).status_code == 401
+        assert (await client.post("/api/local-key/reveal", headers=bearer)).status_code == 401
+        client.cookies.set("qm_session", app.state.session_token)
+        revealed = await client.post("/api/local-key/reveal")
+        assert revealed.status_code == 200
+        assert revealed.json() == {"key": app.state.local_key}
+        assert revealed.headers["cache-control"] == "no-store"
+        foreign = await client.post(
+            "/api/local-key/reveal", headers={"Origin": "https://example.invalid"}
+        )
+        assert foreign.status_code == 403
+
+
+def test_new_profiles_default_to_reasoning_friendly_deadlines():
+    from quotamesh.policy import Policy
+
+    policy = Policy(targets=[{"provider_id": "openai", "model": "gpt-4.1-nano"}])
+    assert (policy.nonstream_deadline_s, policy.first_event_timeout_s) == (90, 45)

@@ -28,8 +28,9 @@ class Policy(BaseModel):
     allow_unknown_price: bool = False
     enabled: bool = True
     max_attempts: Annotated[int, Field(ge=1, le=20)] = 5
-    nonstream_deadline_s: Annotated[float, Field(ge=0.05, le=300, allow_inf_nan=False)] = 45
-    first_event_timeout_s: Annotated[float, Field(ge=0.05, le=300, allow_inf_nan=False)] = 30
+    # Live Gemini replies took 15-28 s non-stream (docs/live-provider-notes.md).
+    nonstream_deadline_s: Annotated[float, Field(ge=0.05, le=300, allow_inf_nan=False)] = 90
+    first_event_timeout_s: Annotated[float, Field(ge=0.05, le=300, allow_inf_nan=False)] = 45
     paid_daily_cap_usd: Money | None = None
     paid_monthly_cap_usd: Money | None = None
     targets: Annotated[list[Target], Field(min_length=1, max_length=30)]

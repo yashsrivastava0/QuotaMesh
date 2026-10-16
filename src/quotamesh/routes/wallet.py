@@ -1,7 +1,9 @@
 """Authorized profile, wallet, usage, and metadata history management."""
 
 import json
+import math
 import re
+import sqlite3
 from datetime import UTC, date, datetime
 
 from fastapi import APIRouter, Request
@@ -50,6 +52,53 @@ def invalid():
         "Invalid configuration: check fields, limits, and target credentials",
         "invalid_configuration",
     )
+
+
+@router.post("/api/profiles/{slug}/reconcile")
+async def reconcile(slug: str, request: Request):
+    """Record a manual amount for paid calls whose cost QuotaMesh could not observe."""
+    if error := denied(request):
+        return error
+    try:
+        body = await request.json()
+        amount, scope = body.get("amount_usd"), body.get("scope", "today")
+        if (
+            scope not in {"today", "month"}
+            or isinstance(amount, bool)
+            or not isinstance(amount, (int, float))
+            or not math.isfinite(amount)
+            or not 0 <= amount <= 1_000_000
+        ):
+            raise ValueError
+    except (ValueError, TypeError, AttributeError):
+        return api_error(
+            400, "Send amount_usd (0 or more) and scope today|month", "invalid_configuration"
+        )
+    try:
+        cleared = request.app.state.store.reconcile_unknown_spend(
+            slug, scope, float(amount), datetime.now(UTC)
+        )
+    except LookupError:
+        return api_error(404, "Profile not found", "profile_not_found")
+    return JSONResponse({"cleared_days": cleared, "amount_usd": float(amount)})
+
+
+@router.post("/api/accounting/acknowledge")
+async def acknowledge_accounting(request: Request):
+    """Re-enable paid routing after the local storage problem has been fixed."""
+    if error := denied(request):
+        return error
+    try:
+        if (await request.json()).get("confirm") is not True:
+            raise ValueError
+    except (ValueError, TypeError, AttributeError):
+        return api_error(400, 'Send {"confirm": true}', "invalid_configuration")
+    try:
+        request.app.state.store.acknowledge_accounting()
+    except (sqlite3.Error, OSError):
+        return api_error(503, "Local storage still cannot record spend", "storage_unavailable")
+    request.app.state.accounting_failed = False
+    return JSONResponse({"accounting_failed": False})
 
 
 @router.get("/api/wallet")

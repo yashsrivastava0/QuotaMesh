@@ -9,6 +9,7 @@ from quotamesh.security import (
     SESSION_LINK_TTL,
     api_error,
     bearer_authorized,
+    browser_authorized,
     mint_bootstrap_token,
     request_port,
 )
@@ -29,3 +30,16 @@ def session_link(request: Request):
         status_code=201,
         headers={"Cache-Control": "no-store"},
     )
+
+
+@router.post("/api/local-key/reveal")
+def reveal_local_key(request: Request):
+    """Return the local gateway key to the signed-in dashboard only.
+
+    The key is fetched on an explicit click and copied to the clipboard by the page; it is
+    never rendered into HTML. Bearer callers already hold the key, so only the session
+    cookie is accepted (the Host/Origin guard rejects cross-site requests).
+    """
+    if not browser_authorized(request):
+        return api_error(401, "Dashboard session required", "unauthorized")
+    return JSONResponse({"key": request.app.state.local_key}, headers={"Cache-Control": "no-store"})

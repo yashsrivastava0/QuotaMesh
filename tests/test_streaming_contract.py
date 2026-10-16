@@ -304,3 +304,30 @@ async def test_reads_are_bounded_by_profile_deadlines_not_httpx(tmp_path):
     timeout = app.state.client.timeout
     await app.state.client.aclose()
     assert (timeout.connect, timeout.read, timeout.write, timeout.pool) == (5, None, 10, 5)
+
+
+async def test_stream_completes_at_done_without_waiting_for_upstream_close(tmp_path):
+    """SDKs disconnect right after [DONE]; that must be recorded as OK, not cancelled."""
+    import time as _time
+
+    class HangsAfterDone(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b'data: {"choices":[{"index":0,"delta":{"content":"hi"}}]}\n\n'
+            yield b'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n'
+            yield b"data: [DONE]\n\n"
+            await asyncio.sleep(30)  # an upstream that keeps the connection open
+
+    def handler(request):
+        return httpx.Response(
+            200, headers={"content-type": "text/event-stream"}, stream=HangsAfterDone()
+        )
+
+    app, client, auth = await setup(tmp_path, handler, keys=[{}])
+    async with client:
+        started = _time.monotonic()
+        response = await call(client, auth, stream=True)
+        assert response.status_code == 200
+        assert response.content.endswith(b"data: [DONE]\n\n")
+        assert _time.monotonic() - started < 5
+    [attempt] = app.state.store.recent_attempts()
+    assert attempt["outcome"] == "OK" and attempt["error_class"] is None
