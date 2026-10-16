@@ -22,7 +22,17 @@ The repository may enforce branch protection through GitHub settings. The checke
 
 QuotaMesh requires Python 3.11 or newer.
 
+```powershell
+# Windows (PowerShell)
+py -3.11 -m venv .venv
+.venv\Scripts\python.exe -m pip install -e ".[dev]"
+.venv\Scripts\python.exe -m ruff check .
+.venv\Scripts\python.exe -m pytest -q
+.venv\Scripts\python.exe -m build
+```
+
 ```sh
+# macOS / Linux
 python3.11 -m venv .venv
 .venv/bin/python -m pip install -e '.[dev]'
 .venv/bin/ruff check .
@@ -30,7 +40,9 @@ python3.11 -m venv .venv
 .venv/bin/python -m build
 ```
 
-Use `QUOTAMESH_DATA_DIR` to isolate local test or development data. Use `quotamesh fake-upstream` for a provider-free manual smoke check. Do not use a real provider key in tests or examples.
+Use `QUOTAMESH_DATA_DIR` to isolate local test or development data. Use `quotamesh demo` or `quotamesh fake-upstream` for a provider-free manual smoke check.
+
+Never put a real provider key in tests, fixtures, examples or commits. Ordinary tests cannot reach real providers: `tests/conftest.py` blocks every non-loopback connection. Real-provider checks are opt-in and budgeted: keys come only from the git-ignored `.env`, tests run with `pytest -m live`, and new fixtures from `scripts/live_probe.py` are sanitized before they are written. See [`docs/live-testing.md`](docs/live-testing.md).
 
 ## Change expectations
 
