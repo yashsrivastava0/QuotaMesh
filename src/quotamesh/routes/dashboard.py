@@ -33,9 +33,15 @@ router = APIRouter()
 UI = Path(__file__).parents[1] / "ui"
 templates = Jinja2Templates(directory=str(UI / "templates"))
 
+# Navigation order; the title is also the navigation label.
 PAGES = {
-    "/": ("overview", "Overview", "Your API access, grouped by the capacity you own."),
-    "/access": ("access", "API access", "Save a provider key or an environment reference."),
+    "/": ("overview", "Overview", "Your API keys, today's usage, and what to do next."),
+    "/start": (
+        "start",
+        "Get started",
+        "Add an API key, check it, create qm/default, and send a first message.",
+    ),
+    "/access": ("access", "API keys", "Save provider API keys or environment references."),
     "/profiles": (
         "profiles",
         "Profiles",
@@ -46,24 +52,28 @@ PAGES = {
         "Playground",
         "Chat with a saved profile and see which provider answered, with tokens, timing and cost.",
     ),
-    "/route": ("route", "Route & test", "Inspect your saved rules before sending a request."),
+    "/route": (
+        "route",
+        "Route preview",
+        "See which target answers next and why others are skipped, without calling a provider.",
+    ),
     "/connect": ("connect", "Connect", "Use one local endpoint with your app’s saved profile."),
     "/activity": (
         "activity",
         "Activity",
         "Follow requests and fallback attempts. Only metadata is retained.",
     ),
-    "/help": ("help", "How QuotaMesh works", "Understand the process and choose your next step."),
     "/help/doctor": (
         "doctor",
         "Diagnostics",
-        "Run a model listing or explicitly test one saved target.",
+        "List a key's models or explicitly test one saved target.",
     ),
     "/help/catalog": (
         "catalog",
-        "Provider catalog",
+        "Providers",
         "Official documentation and access links from the dated registry.",
     ),
+    "/help": ("help", "Help", "How QuotaMesh works, what the numbers mean, and the words used."),
 }
 
 
@@ -83,13 +93,17 @@ def _dashboard_context(request: Request, *, error: str | None = None) -> dict[st
     store = request.app.state.store
     slug = request.query_params.get("profile", "default")
     page, title, description = PAGES.get(request.url.path, PAGES["/"])
+    profiles = store.profiles()
+    routing = store.safe_routing(datetime.now(UTC), slug)
     return {
         "page": page,
         "page_title": title,
         "page_description": description,
-        "page_nav": [(path, values[1]) for path, values in PAGES.items() if path.count("/") <= 1],
+        "page_nav": [(path, values[1]) for path, values in PAGES.items()],
+        # "Get started" stays prominent until a profile can route (named profiles need targets).
+        "configured": bool(routing["targets"]) or any(p["slug"] != "default" for p in profiles),
         "selected_profile": slug,
-        "profiles": store.profiles(),
+        "profiles": profiles,
         "asset_url": asset_url,
         "demo_scenarios": [(key, values[0]) for key, values in _demo_scenarios().items()],
         "demo_scenario": getattr(request.app.state, "demo_scenario", "wallet"),
@@ -98,7 +112,7 @@ def _dashboard_context(request: Request, *, error: str | None = None) -> dict[st
         "gateway_base": str(request.base_url).rstrip("/") + "/v1",
         "demo_mode": getattr(request.app.state, "demo_mode", False),
         "error": error,
-        "routing": store.safe_routing(datetime.now(UTC), slug),
+        "routing": routing,
         "decisions": decision_snapshot(request.app, slug)[0] if page == "overview" else [],
     }
 
@@ -234,6 +248,7 @@ def bootstrap(request: Request, token: str = "") -> Response:
 
 
 @router.get("/", response_class=HTMLResponse)
+@router.get("/start", response_class=HTMLResponse)
 @router.get("/access", response_class=HTMLResponse)
 @router.get("/profiles", response_class=HTMLResponse)
 @router.get("/playground", response_class=HTMLResponse)

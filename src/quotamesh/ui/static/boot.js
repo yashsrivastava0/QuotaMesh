@@ -105,6 +105,8 @@ async function refresh(editPolicy = false) {
   }
   if (page === 'catalog') tasks.push(panel('#catalog-entries',async()=>{const data=await cachedCatalog();return ()=>renderCatalog(data);},version));
   if (page === 'playground') tasks.push(panel('#playground-route',async()=>{const data=await api('/api/explain'+query);return ()=>renderRouteHint(data);},version));
+  // Get started always works on qm/default, whatever profile the address carries.
+  if (page === 'start') tasks.push(panel('#setup-progress',async()=>{const [data,checks]=await Promise.all([api('/api/status?profile=default'),api('/api/doctor')]);return ()=>{startData=data;diagnosticData=checks.checks;renderStart();};},version));
   await Promise.all(tasks);
   if(version===refreshVersion) $('#page-load-status').textContent=page==='help' ? 'Built-in guidance. No provider calls.' : document.querySelector('[data-stale=true]') ? 'Some observations could not be updated. Retry the affected panel.' : `Local view updated ${new Date().toLocaleTimeString()}. Provider quota is not probed.`;
 }

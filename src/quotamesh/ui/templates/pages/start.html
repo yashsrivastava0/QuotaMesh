@@ -1,0 +1,83 @@
+    <section class="card block" aria-label="Setup progress">
+      <ol id="setup-progress" class="stepper">
+        <li data-step="key"><span class="step-mark" aria-hidden="true">1</span><a href="#step-key">Add an API key</a> <span class="step-state chip"></span></li>
+        <li data-step="check"><span class="step-mark" aria-hidden="true">2</span><a href="#step-check">Check the key</a> <span class="step-state chip"></span></li>
+        <li data-step="paid"><span class="step-mark" aria-hidden="true">3</span><a href="#step-paid">Choose paid use</a> <span class="step-state chip"></span></li>
+        <li data-step="profile"><span class="step-mark" aria-hidden="true">4</span><a href="#step-profile">Create qm/default</a> <span class="step-state chip"></span></li>
+        <li data-step="message"><span class="step-mark" aria-hidden="true">5</span><a href="#step-message">Send a first message</a> <span class="step-state chip"></span></li>
+        <li data-step="connect"><span class="step-mark" aria-hidden="true">6</span><a href="#step-connect">Connect your app</a> <span class="step-state chip"></span></li>
+      </ol>
+    </section>
+
+    <section class="card block setup-step" id="step-key" data-step="key">
+      <div class="step-title"><span class="step-mark" aria-hidden="true">1</span><h2>Add an API key</h2><span class="step-state chip"></span></div>
+      <div id="env-import">
+        <p>Paste your <code>.env</code> file or choose it. QuotaMesh finds provider keys such as <code>GEMINI_API_KEY</code> or <code>OPENAI_API_KEY</code>. The file is read in this tab and sent only to your local QuotaMesh; key values are never shown again and the file itself is not saved.</p>
+        <label>.env contents<textarea id="env-content" rows="5" spellcheck="false" autocomplete="off" placeholder="GEMINI_API_KEY=..."></textarea></label>
+        <label>Or choose a .env file<input id="env-file" type="file" accept=".env,.txt,text/plain"></label>
+        <div class="actions"><button type="button" id="env-parse">Find keys</button><span id="env-status" class="fine" role="status"></span></div>
+        <div id="env-results" hidden>
+          <div class="table-wrap"><table class="env-table"><thead><tr><th>Import</th><th>Name</th><th>Provider</th><th>Fingerprint</th><th>Status</th><th>Plan</th></tr></thead><tbody id="env-rows"></tbody></table></div>
+          <p class="fine"><strong>Free</strong> keys can answer right away. <strong>Paid</strong> and <strong>Unknown</strong> keys stay blocked until a profile allows paid use (step 3), so nothing is charged by surprise. Pick the plan your account really has.</p>
+          <ul id="env-warnings" class="fine"></ul>
+          <button type="button" id="env-import-button">Import selected keys</button>
+        </div>
+      </div>
+      <details id="manual-key"><summary>Or enter one API key by hand</summary>
+        <p id="manual-note" class="fine" hidden></p>
+        <form id="manual-key-form">
+          <div class="two-col"><label>Provider<select name="provider_id" required>{% for id, provider in providers.items() %}<option value="{{ id }}">{{ provider.name }}</option>{% endfor %}</select></label><label>Plan<select name="plan_type" required><option value="FREE">Free</option><option value="TRIAL_CREDIT">Trial &amp; credit</option><option value="PAID">Paid</option><option value="UNKNOWN">Unknown (treated as paid)</option></select></label></div>
+          <label>API key<input type="password" name="secret_value" autocomplete="new-password" required placeholder="Saved locally; never shown again"></label>
+          <label>Label<input name="label" maxlength="100" placeholder="Optional; defaults to the provider name"></label>
+          <label id="manual-base-url" hidden>Custom base URL<input name="base_url" type="url" placeholder="https://api.example.com/v1"></label>
+          <button type="submit">Save API key</button>
+        </form>
+      </details>
+      <p id="saved-keys" class="fine"></p>
+    </section>
+
+    <section class="card block setup-step" id="step-check" data-step="check">
+      <div class="step-title"><span class="step-mark" aria-hidden="true">2</span><h2>Check the key</h2><span class="step-state chip"></span></div>
+      <p>Listing models asks the provider which models this key can reach. It sends no chat message and uses no tokens.</p>
+      <div class="actions"><button type="button" id="check-keys">Check keys</button><span id="check-status" class="fine" role="status"></span></div>
+      <div id="key-checks" class="key-checks"></div>
+    </section>
+
+    <section class="card block setup-step" id="step-paid" data-step="paid">
+      <div class="step-title"><span class="step-mark" aria-hidden="true">3</span><h2>Choose paid use</h2><span class="step-state chip"></span></div>
+      <fieldset class="choice-group"><legend>Can qm/default use paid keys?</legend>
+        <label class="check"><input type="radio" name="paid-mode" value="free" checked><span><strong>Free only (recommended)</strong><small>Only Free and Trial &amp; credit keys answer. Paid and Unknown keys are never contacted.</small></span></label>
+        <label class="check"><input type="radio" name="paid-mode" value="paid"><span><strong>Allow paid backup</strong><small>Paid or Unknown keys may answer, up to the daily cap below. Both prices are needed to measure the cap.</small></span></label>
+      </fieldset>
+      <div id="paid-options" class="three-col" hidden>
+        <label>Daily cap (USD)<input id="paid-cap" type="number" min="0" max="1000000" step="any" value="1"></label>
+        <label>Input price (USD per million tokens)<input id="paid-input-price" type="number" min="0" max="1000000" step="any" placeholder="From the provider's price list"></label>
+        <label>Output price (USD per million tokens)<input id="paid-output-price" type="number" min="0" max="1000000" step="any" placeholder="From the provider's price list"></label>
+      </div>
+    </section>
+
+    <section class="card block setup-step" id="step-profile" data-step="profile">
+      <div class="step-title"><span class="step-mark" aria-hidden="true">4</span><h2>Create qm/default</h2><span class="step-state chip"></span></div>
+      <div id="setup-done" hidden><p id="setup-summary"></p><a class="text-link" href="/profiles" data-profile-link>Edit it on the Profiles page →</a></div>
+      <form id="setup-default-form">
+        <p>Your apps call the model <code>qm/default</code>. It starts with one target: the key and exact model below.</p>
+        <div class="two-col"><label>API key<select id="setup-key" required></select></label><label>Exact model ID<input id="setup-model-id" list="setup-model-list" maxlength="200" required placeholder="Check the key to pick from its models"><datalist id="setup-model-list"></datalist></label></div>
+        <p id="setup-warning" class="alert" hidden></p>
+        <button type="submit">Create qm/default</button>
+      </form>
+    </section>
+
+    <section class="card block setup-step" id="step-message" data-step="message">
+      <div class="step-title"><span class="step-mark" aria-hidden="true">5</span><h2>Send a first message</h2><span class="step-state chip"></span></div>
+      <form id="first-message-form">
+        <label>Message<input id="first-message" maxlength="2000" value="Say hello in five words."></label>
+        <button type="submit">{{ 'Send simulated message' if demo_mode else 'Send to qm/default' }}</button>
+      </form>
+      <div id="first-reply" aria-live="polite"></div>
+    </section>
+
+    <section class="card block setup-step" id="step-connect" data-step="connect">
+      <div class="step-title"><span class="step-mark" aria-hidden="true">6</span><h2>Connect your app</h2><span class="step-state chip"></span></div>
+      <p>Point any OpenAI-compatible client at <code>{{ gateway_base }}</code> with the model <code>qm/default</code> and your local QuotaMesh key. Your provider keys stay here.</p>
+      <div class="actions"><a class="text-link" href="/connect" data-profile-link>Get client snippets on Connect →</a><a class="text-link" href="/playground" data-profile-link>Keep chatting in the Playground →</a></div>
+    </section>

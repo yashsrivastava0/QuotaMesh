@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import httpx
 import uvicorn
 from playwright.sync_api import Error as BrowserError
 from playwright.sync_api import expect, sync_playwright
@@ -20,13 +21,40 @@ from quotamesh.demo import app as fake_app
 from quotamesh.demo import configure_demo
 
 
+def fake_provider_transport():
+    """Answer every provider URL from the bundled fake upstream: no network, no real keys.
+
+    Keys imported from a .env use the real registry endpoints, so listing and chat calls are
+    mapped by path suffix onto the fake app in-process.
+    """
+    inner = httpx.ASGITransport(app=fake_app)
+    dropped = {"host", "content-length", "transfer-encoding"}
+
+    async def handler(request):
+        path = request.url.path
+        suffix = next((s for s in ("/models", "/chat/completions") if path.endswith(s)), path)
+        forwarded = httpx.Request(
+            request.method,
+            "http://fake-provider/v1" + suffix,
+            headers=[(k, v) for k, v in request.headers.items() if k.lower() not in dropped],
+            content=await request.aread(),
+        )
+        response = await inner.handle_async_request(forwarded)
+        body = await response.aread()
+        headers = [(k, v) for k, v in response.headers.items() if k.lower() not in dropped]
+        return httpx.Response(response.status_code, headers=headers, content=body)
+
+    return httpx.MockTransport(handler)
+
+
 @contextmanager
-def local_server(demo):
+def local_server(demo, transport=None):
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
-    with TemporaryDirectory(prefix="quotamesh-browser-") as directory:
-        app = create_app(Path(directory))
+    # A lock still held by a slow shutdown must not mask the real failure on Windows.
+    with TemporaryDirectory(prefix="quotamesh-browser-", ignore_cleanup_errors=True) as directory:
+        app = create_app(Path(directory), transport)
         origin = f"http://127.0.0.1:{port}"
         app.mount("/fake", fake_app)
         if demo:
@@ -120,6 +148,67 @@ def onboarding(context):
         expect(page.locator("#notice")).to_contain_text("listing check failed")
         assert "success" not in (page.locator("#notice").get_attribute("class") or "")
         assert "rejected this API key" in page.locator("#notice").inner_text()
+        page.close()
+
+
+FAKE_ENV = """# QuotaMesh browser smoke: obviously fake values, never real keys
+GEMINI_API_KEY=fake-200:smoke-gemini-not-a-real-key
+export OPENAI_API_KEY="fake-200:smoke-openai-not-a-real-key"
+GROQ_API_KEY=your_groq_key_here
+UNRELATED_SETTING=hello
+"""
+
+
+def start_setup(context, screenshots=None):
+    """Get started: paste a fake .env, import, list models, create qm/default, first reply."""
+    with local_server(False, fake_provider_transport()) as (app, origin):
+        page = context.new_page()
+        page.goto(f"{origin}/bootstrap?token={app.state.bootstrap_token}")
+        ready(page)
+        go(page, origin, "/start")
+        assert "prominent" in page.locator("nav a.nav-start").get_attribute("class")
+        assert page.locator("nav a[aria-current=page]").inner_text() == "Get started"
+        page.locator("#env-content").fill(FAKE_ENV)
+        page.locator("#env-parse").click()
+        expect(page.locator("#env-results")).to_be_visible()
+        assert page.locator("#env-rows tr").count() == 4
+        gemini = page.locator('#env-rows tr[data-name="GEMINI_API_KEY"]')
+        assert gemini.locator("input").is_checked()
+        assert gemini.locator("select").input_value() == "FREE"
+        openai = page.locator('#env-rows tr[data-name="OPENAI_API_KEY"]')
+        assert openai.locator("select").input_value() == "PAID"
+        assert page.locator('#env-rows tr[data-name="GROQ_API_KEY"] input').is_disabled()
+        assert "not-a-real-key" not in page.locator("#env-results").inner_text()
+        page.locator("#env-import-button").click()
+        expect(page.locator("#env-status")).to_contain_text("Imported 2 API key(s)")
+        assert page.locator("#env-content").input_value() == "", "Pasted secrets are cleared"
+        expect(page.locator('#step-key .step-state')).to_have_text("Done")
+        page.locator("#check-keys").click()
+        expect(page.locator("#check-status")).to_have_text("Checks finished.")
+        assert page.locator(".key-check").filter(has_text="Found 2 model(s)").count() == 2
+        page.locator(".key-check").filter(has_text="GEMINI_API_KEY").locator("select").select_option(
+            "fake-free"
+        )
+        assert page.locator("[name=paid-mode][value=free]").is_checked()
+        assert "GEMINI_API_KEY" in page.locator("#setup-key option:checked").inner_text()
+        assert page.locator("#setup-model-id").input_value() == "fake-free"
+        page.locator("#setup-default-form button[type=submit]").click()
+        expect(page.locator("#notice")).to_contain_text("qm/default created")
+        expect(page.locator('#step-profile .step-state')).to_have_text("Done")
+        routing = app.state.store.safe_routing(datetime.now(UTC))
+        assert [(t["provider_id"], t["model"]) for t in routing["targets"]] == [
+            ("gemini", "fake-free")
+        ]
+        assert not routing["profile"]["allow_paid"]
+        page.locator("#first-message-form button[type=submit]").click()
+        expect(page.locator("#first-reply .first-reply")).to_have_text("Hello from fake upstream")
+        expect(page.locator("#first-reply")).to_contain_text("Answered by gemini / fake-free")
+        expect(page.locator('#step-message .step-state')).to_have_text("Done")
+        assert not page.evaluate("localStorage.length || sessionStorage.length")
+        if screenshots:
+            page.screenshot(path=str(screenshots / "start-complete.png"), full_page=True)
+        go(page, origin, "/start")
+        assert "prominent" not in page.locator("nav a.nav-start").get_attribute("class")
         page.close()
 
 
@@ -271,6 +360,7 @@ def playground(page, origin, screenshots=None):
 def journeys(page, app, origin, screenshots, metrics):
     for path, name in [
         ("/", "overview"),
+        ("/start", "start"),
         ("/access", "access"),
         ("/profiles", "profiles"),
         ("/playground", "playground"),
@@ -432,10 +522,12 @@ def journeys(page, app, origin, screenshots, metrics):
         if scenario == "fallback":
             page.locator("#refresh").click()
             ready(page)
-            wait = page.locator("#decisions .blocked a.text-link").first
-            assert wait.get_attribute("href").startswith("/route?profile=default"), (
-                wait.get_attribute("href")
-            )
+            # The server's recovery_action.href wins over the dashboard's fallback mapping.
+            explained = page.request.get(f"{origin}/api/explain?profile=default").json()
+            action = next(d["recovery_action"] for d in explained["decisions"] if not d["eligible"])
+            link = page.locator("#decisions .blocked a.text-link").first.get_attribute("href")
+            assert link == (action.get("href") or link), (link, action)
+            assert not link.startswith("/help?"), link
         assert f"HTTP {status}" in summary and f"{attempts} upstream attempt" in summary, (
             scenario,
             summary,
@@ -565,6 +657,11 @@ def main():
             report["checks"].append(
                 "fresh-install defaults, picker names after create/rename, Escape on leave dialog"
             )
+            start_setup(context, screenshots)
+            report["checks"].append(
+                "Get started: fake .env parse/import, model listing, Free-only qm/default, "
+                "first streamed reply (provider calls answered by the in-process fake)"
+            )
             with local_server(True) as (app, origin):
                 page = context.new_page()
                 page.goto(f"{origin}/bootstrap?token={app.state.bootstrap_token}")
@@ -572,7 +669,7 @@ def main():
                 journeys(page, app, origin, screenshots, report["pages"])
                 report["checks"].extend(
                     [
-                        "ten pages and responsive layout",
+                        "eleven pages and responsive layout",
                         (
                             "Playground stream and non-stream replies with metadata strip, "
                             "multi-turn context, paid_blocked and no_candidates explanations"
