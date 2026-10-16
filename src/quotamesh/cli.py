@@ -265,12 +265,136 @@ def environment(
     print(result["snippets"]["env"])
 
 
+PLAN_CHOICES = ("FREE", "TRIAL_CREDIT", "PAID", "UNKNOWN")
+
+
+def plan_overrides(values):
+    overrides = {}
+    for value in values or []:
+        name, separator, plan = value.partition("=")
+        plan = plan.strip().upper()
+        if not separator or not name.strip() or plan not in PLAN_CHOICES + ("SKIP",):
+            console.print(
+                "Use --plan NAME=PLAN with FREE, TRIAL_CREDIT, PAID, UNKNOWN or SKIP.",
+                markup=False,
+            )
+            raise typer.Exit(2)
+        overrides[name.strip()] = plan
+    return overrides
+
+
+def read_env_file(path):
+    """Read .env text locally; only its content (never the path) goes to the server."""
+    from quotamesh.envfile import MAX_BYTES
+
+    try:
+        if path.stat().st_size > MAX_BYTES:
+            console.print("The .env file is larger than 64 KiB.", markup=False)
+            raise typer.Exit(1)
+        return path.read_bytes().decode("utf-8-sig")
+    except UnicodeDecodeError:
+        console.print("The .env file is not UTF-8 text.", markup=False)
+        raise typer.Exit(1) from None
+    except OSError:
+        console.print("Cannot read that .env file. Check its path and permissions.", markup=False)
+        raise typer.Exit(1) from None
+
+
+def import_env_file(path, plans, store, yes, port):
+    """Preview a .env file through the local server, choose plans, then import."""
+    overrides = plan_overrides(plans)
+    content = read_env_file(path)
+    preview = local_api("/api/environment/parse", port=port, method="POST", body={"content": content})
+    table = Table(title="Provider keys in " + path.name + " (values are never shown)")
+    for column in ("Name", "Provider", "Fingerprint", "Status", "Suggested plan"):
+        table.add_column(column)
+    for entry in preview["entries"]:
+        table.add_row(
+            entry["name"],
+            entry["provider_id"] or "-",
+            entry["fingerprint"] or "-",
+            entry["status"],
+            entry["suggested_plan"] or "-",
+        )
+    console.print(table)
+    for warning in preview["warnings"]:
+        console.print(f"Line {warning['line']}: {warning['message']}", markup=False)
+    candidates = [entry for entry in preview["entries"] if entry["status"] == "new"]
+    for name in sorted(set(overrides) - {entry["name"] for entry in candidates}):
+        console.print(f"--plan {name}: no new key with that name; ignored.", markup=False)
+    items = []
+    for entry in candidates:
+        plan = overrides.get(entry["name"])
+        if plan is None and yes:
+            plan = entry["suggested_plan"]
+        while plan not in PLAN_CHOICES + ("SKIP",):
+            plan = (
+                typer.prompt(
+                    f"Plan for {entry['name']} ({entry['provider_id']}): "
+                    "FREE, TRIAL_CREDIT, PAID, UNKNOWN or SKIP",
+                    default=entry["suggested_plan"],
+                )
+                .strip()
+                .upper()
+            )
+        if plan != "SKIP":
+            items.append({"name": entry["name"], "plan_type": plan})
+    if not items:
+        console.print("No new provider keys to import.")
+        return
+    result = local_api(
+        "/api/environment/import-file",
+        port=port,
+        method="POST",
+        body={"content": content, "store": store, "items": items},
+    )
+    for row in result["imported"]:
+        console.print(
+            f"Imported {row['name']} as credential {row['credential_id']} "
+            f"({row['provider_id']}, {row['plan_type']}).",
+            markup=False,
+        )
+    for row in result["skipped"]:
+        console.print(f"Skipped {row['name']}: {row['reason']}.", markup=False)
+    for row in result["warnings"]:
+        console.print(f"{row['name']}: {row['message']}", markup=False)
+    if result["imported"]:
+        console.print(
+            "Next: run `quotamesh doctor <credential>` to check listing access, then add the "
+            "keys to a profile in the dashboard (`quotamesh open`). Paid and UNKNOWN plans stay "
+            "blocked until a profile explicitly allows paid use.",
+            markup=False,
+        )
+
+
 @app.command("import-env")
 def import_environment(
     names: Annotated[list[str] | None, typer.Argument()] = None,
+    file: Annotated[
+        Path | None, typer.Option("--file", help="Read provider keys from this .env file")
+    ] = None,
+    plan: Annotated[
+        list[str] | None, typer.Option("--plan", help="NAME=PLAN; repeat for several keys")
+    ] = None,
+    store: Annotated[
+        str,
+        typer.Option(
+            "--store", help="value: save the keys; reference: save variable names only"
+        ),
+    ] = "value",
+    yes: Annotated[bool, typer.Option("--yes", help="Accept suggested plans")] = False,
     port: int = typer.Option(8787, min=1, max=65535),
 ):
-    """Import present server-process keys as environment references and UNKNOWN plans."""
+    """Import keys from a .env file (--file), or server-process variables as references."""
+    if file is not None:
+        if names:
+            console.print("Use either --file or variable names, not both.", markup=False)
+            raise typer.Exit(2)
+        if store not in {"value", "reference"}:
+            console.print("Use --store value or --store reference.", markup=False)
+            raise typer.Exit(2)
+        import_env_file(file, plan, store, yes, port)
+        return
     preview = local_api("/api/environment", port=port)
     present = [v["env_name"] for v in preview["variables"] if v["present"] and not v["configured"]]
     if not names:

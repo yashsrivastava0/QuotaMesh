@@ -67,7 +67,8 @@ class DuplicateCredential(ValueError):
     """A sanitized management conflict, never containing secret material."""
 
 
-def reject_duplicate(conn, provider, base_url, secret, env, exclude=0):
+def find_duplicate(conn, provider, base_url, secret, env, exclude=0):
+    """Return the ID of saved access with the same reference or effective secret, if any."""
     effective = secret or os.environ.get(env or "")
     for row in conn.execute(
         "SELECT c.id,s.secret_value,s.env_name FROM credentials c JOIN secrets s "
@@ -77,9 +78,15 @@ def reject_duplicate(conn, provider, base_url, secret, env, exclude=0):
     ):
         other = row["secret_value"] or os.environ.get(row["env_name"] or "")
         if (env and env == row["env_name"]) or (effective and effective == other):
-            raise DuplicateCredential(
-                "This API access is already configured; edit the existing credential."
-            )
+            return row["id"]
+    return None
+
+
+def reject_duplicate(conn, provider, base_url, secret, env, exclude=0):
+    if find_duplicate(conn, provider, base_url, secret, env, exclude) is not None:
+        raise DuplicateCredential(
+            "This API access is already configured; edit the existing credential."
+        )
 
 
 class Store:
@@ -630,6 +637,11 @@ class Store:
             identifier = cursor.lastrowid
             conn.execute("INSERT INTO secrets VALUES (?,?,?)", (identifier, secret, env))
             return identifier
+
+    def configured_secret(self, provider_id, base_url, secret):
+        """ID of saved access whose effective secret equals ``secret`` (never returns it)."""
+        with self.connection() as conn:
+            return find_duplicate(conn, provider_id, base_url, secret, None)
 
     def save_policy(self, policy, targets, slug="default"):
         self.save_profile(slug, policy, targets)
