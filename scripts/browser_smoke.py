@@ -360,6 +360,40 @@ def playground(page, origin, screenshots=None):
 DEFERRED = []
 
 
+def overview_chart(page, origin, screenshots=None):
+    """Today tiles and the 14-day chart from wallet.daily, real and contract-shaped data."""
+    go(page, origin, "/")
+    expect(page.locator("#usage-chart")).to_be_visible()
+    assert page.locator("#tile-requests").inner_text() not in {"…", ""}
+    assert page.locator("#chart-table-body tr").count() == 14
+    assert page.locator("#chart-frame .segment").count() >= 1, "Today's traffic is drawn"
+    assert page.locator("#chart-legend").is_hidden(), "One series: the title names it"
+    wallet = page.request.get(f"{origin}/api/wallet").json()
+    wallet["daily"][-1].update(
+        routed_requests=9,
+        by_provider={
+            "gemini": {"routed_requests": 6, "known_cost_usd": 0},
+            "openai": {"routed_requests": 3, "known_cost_usd": 0.0004},
+        },
+    )
+    wallet["daily"][-2].update(
+        routed_requests=2, by_provider={"openai": {"routed_requests": 2, "known_cost_usd": 0.0002}}
+    )
+    page.route("**/api/wallet", lambda route: route.fulfill(json=wallet))
+    try:
+        go(page, origin, "/")
+        expect(page.locator("#chart-legend li")).to_have_count(2)
+        assert page.locator("#chart-frame .segment.series-1").count() == 2  # openai, registry order
+        assert page.locator("#chart-frame .segment.series-2").count() == 1  # gemini
+        page.locator("#chart-frame .hit").last.focus()
+        expect(page.locator(".chart-tip")).to_have_attribute("visibility", "visible")
+        assert "9 request(s)" in page.locator(".chart-tip").text_content()
+        if screenshots:
+            page.locator("#usage-chart").screenshot(path=str(screenshots / "overview-chart.png"))
+    finally:
+        page.unroute("**/api/wallet")
+
+
 def copy_local_key(page, app, origin):
     """Copy local key: clipboard on success, one-time read-only field when denied."""
     if page.request.post(f"{origin}/api/local-key/reveal", data={}).status == 404:
@@ -576,6 +610,7 @@ def journeys(page, app, origin, screenshots, metrics):
             assert "HTTP 429" in send(page)
 
     playground(page, origin, screenshots)
+    overview_chart(page, origin, screenshots)
 
     load(page, origin, "large")
     go(page, origin, "/access")
@@ -703,6 +738,8 @@ def main():
                 report["checks"].extend(
                     [
                         "eleven pages and responsive layout",
+                        "Overview today tiles and 14-day chart (real and two-provider data)",
+                        "Connect copy local key with clipboard granted and denied",
                         (
                             "Playground stream and non-stream replies with metadata strip, "
                             "multi-turn context, paid_blocked and no_candidates explanations"
