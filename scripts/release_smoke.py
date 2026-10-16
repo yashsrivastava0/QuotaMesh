@@ -9,9 +9,16 @@ import socket
 import subprocess
 import tempfile
 import time
+import tomllib
 from pathlib import Path
 
 import httpx
+
+
+def project_version() -> str:
+    """The version this checkout declares; installed artifacts must report the same."""
+    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    return tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]["version"]
 
 
 def free_port():
@@ -38,6 +45,7 @@ def main():
     parser.add_argument("--wheel", type=Path)
     parser.add_argument("--package")
     parser.add_argument("--offline", action="store_true")
+    parser.add_argument("--expect-version", default=project_version())
     parser.add_argument("--cache-dir", type=Path)
     args = parser.parse_args()
     if args.wheel or args.package:
@@ -53,7 +61,9 @@ def main():
         ]
     else:
         command = [shutil.which("quotamesh") or "quotamesh"]
-    with tempfile.TemporaryDirectory(prefix="quotamesh-release-") as directory:
+    with tempfile.TemporaryDirectory(
+        prefix="quotamesh-release-", ignore_cleanup_errors=True
+    ) as directory:
         directory = Path(directory)
         env = {**os.environ, "QUOTAMESH_DATA_DIR": str(directory / "data"), "PYTHONPATH": ""}
         port, upstream_port = free_port(), free_port()
@@ -86,7 +96,7 @@ def main():
                 timeout=120,
                 check=True,
             ).stdout.strip()
-            assert version == "0.1.0", version
+            assert version == args.expect_version, (version, args.expect_version)
             if args.wheel or args.package:
                 # Resolve the installed console entry point once. Launching it
                 # directly keeps process ownership and shutdown deterministic;
