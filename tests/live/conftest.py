@@ -39,6 +39,7 @@ from .helpers import (
     ProviderHealth,
     choose_gemini_model,
     choose_openai_model,
+    close_store,
     find_env_file,
     list_models,
     live_data_dir,
@@ -169,6 +170,7 @@ async def gateway(live_budget):
         finally:
             await client.aclose()
             await app.state.client.aclose()
+            close_store(app)
 
 
 def pytest_terminal_summary(terminalreporter):
