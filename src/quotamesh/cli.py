@@ -107,6 +107,10 @@ def local_api(path, *, port=8787, body=None, method="GET"):
 def port_available(port: int) -> bool:
     """True when 127.0.0.1:port can be bound right now."""
     with socket.socket() as probe:
+        if os.name != "nt":
+            # Like uvicorn: a port in TIME_WAIT after a graceful restart is still free.
+            # (On Windows SO_REUSEADDR would allow binding a port that is in use.)
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             probe.bind(("127.0.0.1", port))
         except OSError:
